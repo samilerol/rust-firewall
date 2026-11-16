@@ -43,11 +43,15 @@ public final class ProtectedUdpSocketSmoke {
             }, remote);
             check(observed.get().isClosed());
 
-            expectIOException(socket -> {
-                observed.set(socket);
-                throw new SecurityException("VPN unavailable");
-            }, remote);
-            check(observed.get().isClosed());
+            try {
+                ProtectedUdpSocketFactory.open(socket -> {
+                    observed.set(socket);
+                    throw new SecurityException("VPN unavailable");
+                }, remote);
+                throw new AssertionError("SecurityException was suppressed");
+            } catch (SecurityException expected) {
+                check(observed.get().isClosed());
+            }
 
             expectIOException(socket -> {
                 throw new AssertionError("must not be reached");
