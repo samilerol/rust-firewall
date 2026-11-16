@@ -39,6 +39,11 @@ jobs:
           mkdir -p /tmp/netscope-tun-egress
           javac --release 17 -d /tmp/netscope-tun-egress android/app/src/main/java/org/netscope/ngfw/TunPacketWriter.java tools/TunPacketWriterSmoke.java
           java -cp /tmp/netscope-tun-egress org.netscope.ngfw.TunPacketWriterSmoke
+      - name: Bounded TUN egress queue host-JVM contract
+        run: |
+          mkdir -p /tmp/netscope-tun-queue
+          javac --release 17 -d /tmp/netscope-tun-queue android/app/src/main/java/org/netscope/ngfw/TunPacketWriter.java android/app/src/main/java/org/netscope/ngfw/TunEgressQueue.java tools/TunEgressQueueSmoke.java
+          java -cp /tmp/netscope-tun-queue org.netscope.ngfw.TunEgressQueueSmoke
       - name: Real JVM JNI boundary checks
         run: |
           cargo +stable build --locked -p netscope-android
