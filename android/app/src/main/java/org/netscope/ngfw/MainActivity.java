@@ -33,6 +33,11 @@ public final class MainActivity extends Activity {
         start.setEnabled(nativeReady);
         if (!nativeReady) status.append("\nRust library unavailable; VPN disabled.");
         start.setOnClickListener(view -> {
+            if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 2);
+                status.append("\nAllow notifications, then tap Start again. The diagnostic requires visible stop controls.");
+                return;
+            }
             Intent consent = VpnService.prepare(this);
             if (consent != null) startActivityForResult(consent, CONSENT);
             else startDiagnostic();
