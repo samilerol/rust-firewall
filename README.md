@@ -25,7 +25,7 @@ See [architecture](docs/ARCHITECTURE.md), [security model](docs/SECURITY_MODEL.m
 
 ## Limitations
 
-No socket forwarding, app attribution, DNS filtering, DPI, IDS or kernel adapter exists. A minimal Android consent/service/JNI diagnostic discards all read datagrams; it is not a usable forwarding firewall. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
+Portable UDP socket relay exists with loopback coverage; TCP forwarding, app attribution, DNS filtering, DPI, IDS and kernel adapters remain unimplemented. A minimal Android consent/service/JNI diagnostic discards all read datagrams; it is not a usable forwarding firewall. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
 
 This public project must never receive private code from `samilerol/netscope`.
 
@@ -46,3 +46,11 @@ Use `netscope_packet::parse_checked(bytes, ChecksumPolicy::Require)` at a bounda
 ## Android diagnostic milestone
 
 `android/` contains a consent/start/stop screen and VPNService; `netscope-android` provides the bounded JNI inspection bridge. **Starting the diagnostic VPN blocks routed traffic: there is no forwarding.** See [Android integration](docs/ANDROID_INTEGRATION.md) for ownership, APK build/CI, limitations and outstanding physical-device validation. Java is limited to platform/lifecycle integration and this temporary diagnostic screen; the final Rust-native UI is not implemented.
+
+## Portable engine and UDP relay
+
+- `netscope-engine`: checked packet admission, bounded flows, atomic policy replacement, explicit response authorization and aggregate counters.
+- `netscope-transport`: nonblocking IPv4/IPv6 UDP relay with mandatory protection-before-connect hook, current response-policy checks, bounded socket count, MTU enforcement and network reset.
+- Conntrack uses one ordered expiry record per active flow; policy compiles priority order once while preserving original rule indices.
+
+See [engine/transport contracts](docs/ENGINE_TRANSPORT.md). APK/UI work is paused; the Android diagnostic remains drop-all and is not connected to this relay. There is no TCP forwarder yet. A successful UDP loopback test is not Android/device enforcement evidence.

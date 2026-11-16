@@ -70,16 +70,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "netscope-conntrack"
+version = "0.1.0"
+dependencies = [
+ "netscope-packet",
+]
+
+[[package]]
+name = "netscope-engine"
+version = "0.1.0"
+dependencies = [
+ "netscope-conntrack",
+ "netscope-packet",
+ "netscope-policy",
+]
+
+[[package]]
 name = "netscope-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "netscope-engine",
  "netscope-packet",
+ "netscope-policy",
 ]
 
 [[package]]
 name = "netscope-packet"
 version = "0.1.0"
+
+[[package]]
+name = "netscope-policy"
+version = "0.1.0"
+dependencies = [
+ "netscope-packet",
+]
 
 [[package]]
 name = "r-efi"

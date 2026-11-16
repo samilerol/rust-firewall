@@ -11,3 +11,5 @@ The private Kotlin project samilerol/netscope is entirely separate. Never modify
 Milestone 1 implements packet metadata, policy and bounded flow observations only. README and ROADMAP define actual and planned functionality. Future tasks must preserve this context and update decision/security/test documents with behavior changes.
 
 Current platform milestone adds a deliberately traffic-blocking Android diagnostic VPN and JNI bridge, documented in ANDROID_INTEGRATION.md. This is not forwarding or proven Android protection; device tests and transport selection are still required.
+
+Owner direction: pause APK/UI work and prioritize the portable software. Engine/UDP relay, optimized bounded expiry and compiled policy precedence are documented in ENGINE_TRANSPORT.md; the Android diagnostic is not wired to the new relay. TCP transport is still pending.

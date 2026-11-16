@@ -1,0 +1,15 @@
+[package]
+name = "netscope-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+netscope-packet = { path = "../netscope-packet" }
+netscope-policy = { path = "../netscope-policy" }
+netscope-conntrack = { path = "../netscope-conntrack" }

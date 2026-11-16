@@ -1,7 +1,7 @@
 //! Allocation-free IP/TCP/UDP parsing, with explicit optional checksum validation.
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Protocol {
     Tcp,
     Udp,
@@ -175,7 +175,19 @@ pub fn parse_checked(b: &[u8], policy: ChecksumPolicy) -> Result<CheckedPacket, 
         Protocol::Tcp => 6,
         Protocol::Udp => 17,
     };
-    // parse already restricted transport length to the IP datagram's 16-bit length field.
+    let sum = transport_sum(b, offset, protocol);
+    if sum != 0xffff {
+        return Err(ParseError::InvalidTransportChecksum);
+    }
+    Ok(CheckedPacket {
+        packet,
+        transport_checksum: TransportChecksum::Verified,
+    })
+}
+
+fn transport_sum(b: &[u8], offset: usize, protocol: u8) -> u32 {
+    let segment = &b[offset..];
+    let ipv4 = offset == 20;
     let length = segment.len() as u32;
     let mut sum = if ipv4 {
         add_words(0, &b[12..20])
@@ -189,13 +201,7 @@ pub fn parse_checked(b: &[u8], policy: ChecksumPolicy) -> Result<CheckedPacket, 
         sum = add_words(sum, &length.to_be_bytes());
         sum = add_words(sum, &[0, 0, 0, protocol]);
     }
-    if add_words(sum, segment) != 0xffff {
-        return Err(ParseError::InvalidTransportChecksum);
-    }
-    Ok(CheckedPacket {
-        packet,
-        transport_checksum: TransportChecksum::Verified,
-    })
+    add_words(sum, segment)
 }
 
 #[cfg(test)]
@@ -309,3 +315,6 @@ mod tests {
         }
     }
 }
+
+/// UDP datagram construction for portable reply transport.
+pub mod udp;
