@@ -36,5 +36,8 @@ assert "new Builder()" in code and ".establish()" in code
 assert ".addRoute(\"0.0.0.0\", 0)" in code
 assert ".addRoute(\"::\", 0)" in code
 assert "START_NOT_STICKY" in code
+assert "TunPacketWriter" not in code, "Diagnostic must not attach TUN egress writer"
+assert "AutoCloseOutputStream" not in code, "Diagnostic cannot create TUN output"
+
 
 print("Android diagnostic source safeguards: PASS (not a device or security audit)")
