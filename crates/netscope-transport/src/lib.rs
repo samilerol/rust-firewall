@@ -295,6 +295,9 @@ impl<P: SocketProtector> UdpRelay<P> {
 
 /// Packet-oriented TCP proxy using a bounded userspace TCP stack and protected upstream streams.
 pub mod tcp;
+/// Unix/Android bridge for protecting the actual native sockets owned by Rust.
+#[cfg(unix)]
+pub mod fd_protection;
 
 fn unsupported_endpoint(metadata: &netscope_packet::Packet) -> bool {
     let destination = match metadata.destination {
