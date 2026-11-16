@@ -8,7 +8,7 @@ use socket2::Socket;
 use std::{
     io,
     net::UdpSocket,
-    os::fd::{AsRawFd, RawFd},
+    os::fd::RawFd,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -67,12 +67,7 @@ impl AndroidVpnProtector {
 
 impl SocketProtector for AndroidVpnProtector {
     fn protect(&self, socket: &UdpSocket) -> io::Result<()> {
-        let fd = socket.as_raw_fd();
         SocketProtector::protect(&FdProtector::new(|fd| self.protect_fd(fd)), socket)
-            .map_err(|error| {
-                let _ = fd;
-                error
-            })
     }
 }
 
