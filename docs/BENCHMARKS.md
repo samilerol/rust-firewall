@@ -1,6 +1,6 @@
 # Portable core microbenchmarks
 
-This harness measures CPU time per synchronous library operation on synthetic inputs. It does not measure Android forwarding, battery, network throughput, end-to-end latency, resident memory or superiority over other firewalls.
+This harness measures elapsed wall-clock time per synchronous library operation on synthetic inputs. It does not measure Android forwarding, battery, network throughput, end-to-end latency, resident memory or superiority over other firewalls.
 
 ## Run
 
