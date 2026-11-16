@@ -1,0 +1,47 @@
+name: Core benchmark baseline
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - name: Capture environment
+        run: |
+          mkdir -p benchmark-results
+          {
+            git rev-parse HEAD
+            rustc +stable -Vv
+            uname -a
+            lscpu
+            free -h
+            df -h .
+          } > benchmark-results/environment.txt
+      - name: Run release microbenchmarks
+        run: cargo +stable run --release --locked -p netscope-bench > benchmark-results/raw.csv 2> benchmark-results/build-and-run.log
+      - name: Summarize baseline
+        run: |
+          python3 tools/summarize_bench.py benchmark-results/raw.csv > benchmark-results/summary.md
+          cat benchmark-results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve raw data and context
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: core-benchmark-${{ github.sha }}
+          path: benchmark-results/
+          retention-days: 7
+          if-no-files-found: ignore

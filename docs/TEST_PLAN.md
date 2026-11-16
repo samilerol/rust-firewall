@@ -30,3 +30,7 @@ No Android device, VPN, leak, forwarding, battery, memory or performance compari
 The current local stable suite contains 12 passing tests, including new configuration rejection and CIDR property coverage. The CIDR oracle checks every IPv4/IPv6 prefix against every single-bit address difference (17,568 comparisons total). Tests verify the exact rule cap, stricter custom limits, zero limits, attempts to exceed the hard ceiling and rejection of inverted source/destination ranges.
 
 The isolated fuzz workspace adds address-sanitized raw packet testing with structural success invariants and truncation/appending rejection properties. See fuzz/README.md for commands and constraints. A bounded CI run is separate evidence from local stable tests; check the PR's actual Actions result. Benchmarking, checksum validation and broad property/fuzz coverage remain outstanding.
+
+## Benchmark harness follow-up
+
+Local verification: workspace fmt, Clippy with warnings denied, build and all 12 existing behavior tests passed; the workspace including netscope-bench also passed Rust 1.85 tests. The release smoke command executed all 31 cases with three measured samples plus warmup, producing 125 CSV lines including the header; the stdlib Python summarizer consumed that actual output successfully. No performance threshold was asserted. Full hosted-runner results must be read from the benchmark CI job, not inferred from this local smoke check. See BENCHMARKS.md for commands and limitations.

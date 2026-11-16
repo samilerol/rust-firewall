@@ -1,0 +1,15 @@
+[package]
+name = "netscope-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+netscope-packet = { path = "../../crates/netscope-packet" }
+netscope-policy = { path = "../../crates/netscope-policy" }
+netscope-conntrack = { path = "../../crates/netscope-conntrack" }

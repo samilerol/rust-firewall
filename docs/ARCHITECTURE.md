@@ -9,3 +9,5 @@ Tracking uses a HashMap, limited by configured maximum entries; Rust allocator o
 Future: minimal Android VPNService and protected socket bridge -> Rust TUN parser -> policy -> explicit transport -> OS sockets. Socket protection must precede forwarding to avoid VPN loops. The UI and Android APIs stay outside these crates. DNS, DPI, threat, IDS, platform, Android, Linux and UI crates are future targets, not existing capabilities.
 
 Rootless mode is constrained by Android's VPN lifecycle and competing VPN apps. Rooted mode is a separate future adapter evaluating nftables/iptables/netfilter/eBPF against actual kernel support, with privilege checks, atomic apply, rollback and safe restoration. No kernel changes occur in milestone 1.
+
+`tools/core-bench` is a development-only fourth workspace package, using the three core libraries without changing their APIs. Its work is bounded by fixed sample counts and input sizes. See BENCHMARKS.md for measurement boundaries.
