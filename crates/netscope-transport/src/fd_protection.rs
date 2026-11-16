@@ -91,7 +91,7 @@ mod tests {
         let tcp = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
         let failure = FdProtector::new(|fd| {
             assert!(fd >= 0);
-            Err(io::Error::new(io::ErrorKind::Other, "platform unavailable"))
+            Err(io::Error::other("platform unavailable"))
         });
         assert_eq!(
             SocketProtector::protect(&failure, &udp).unwrap_err().kind(),
