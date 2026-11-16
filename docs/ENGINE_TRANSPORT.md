@@ -2,7 +2,7 @@
 
 ## Current scope
 
-The Rust libraries now provide a functional checked-packet engine and synchronous/nonblocking UDP relay. They are independent of JNI, TUN, UI and Android lifecycle. TCP parsing/policy admission still exists, but **no TCP forwarding/state machine** exists. The Android diagnostic remains unchanged and does not use this relay. APK/UI work is paused by owner preference; advance/test the portable software first.
+The Rust libraries now provide a functional checked-packet engine and synchronous/nonblocking UDP relay. They are independent of JNI, TUN, UI and Android lifecycle. TCP parsing/policy admission and an **experimental separate TCP relay** now exists (see TCP_TRANSPORT.md). The Android diagnostic remains unchanged and does not use this relay. APK/UI work is paused by owner preference; advance/test the portable software first.
 
 ## Engine contract
 
@@ -45,3 +45,5 @@ The first hosted comparison exposed a bulk-drain regression from per-entry tree/
 ## Optional DNS guard
 
 set_dns_filter activates bounded classic question parsing/domain policy only on selected destination ports. It retains at most one query per existing flow, accepts identical retries and rejects conflicting concurrent questions. Pending IDs/questions must match responses and are consumed/cleared with socket lifecycle. Domain allow never overrides engine policy. See DNS_POLICY.md; unselected ports, encrypted/TCP DNS and alias-chain/domain-to-IP controls are out of scope.
+
+The TCP relay now supplies an independently bounded smoltcp virtual endpoint plus protected OS stream. TCP-specific lifecycle/budgets and DNS limitations are in TCP_TRANSPORT.md. The UDP API/guard remain separate. Shared endpoint checks now reject unspecified/multicast/broadcast sources as well as destination aliases before socket creation.

@@ -16,6 +16,8 @@ The packet crate additionally exposes parse_checked with explicit Require/AllowI
 
 The platform adapter and Android project are described in ANDROID_INTEGRATION.md. Descriptor ownership stays in one Java reader; JNI receives bounded bytes only. The temporary platform consent screen is distinct from the future Rust-native product UI.
 
-The netscope-engine and netscope-transport crates implement checked admission and bounded nonblocking UDP socket relay. See ENGINE_TRANSPORT.md for response authorization, transactional policy revocation, endpoint/MTU restrictions and protection-before-connect. They add no third-party dependencies. TCP forwarding, platform event loops, Android socket protection and production UI remain separate work.
+The netscope-engine and netscope-transport crates implement checked admission and bounded nonblocking UDP socket relay. See ENGINE_TRANSPORT.md for response authorization, transactional policy revocation, endpoint/MTU restrictions and protection-before-connect. UDP/admission use std/internal workspace dependencies; the TCP module adds the pinned dependencies reviewed in TCP_TRANSPORT.md. Experimental TCP forwarding is implemented by a separate bounded module; platform event loops, Android socket protection and production UI remain separate work.
 
 The relay optionally calls netscope-dns for explicitly selected UDP ports, with one pending canonical question/ID per flow and current response-policy checks. DNS policy cannot grant IP permission. See DNS_POLICY.md for conservative parsing profiles, state revocation and bypass/encryption limitations.
+
+TCP uses smoltcp for a virtual per-flow raw-IP TCP endpoint and a protected nonblocking OS TCP stream for upstream bytes. Accepted SYN precedes upstream creation; OS read/write buffers are bridged with bounded zero-extra-queue closures. See TCP_TRANSPORT.md for limits, dependency/MSRV choice, scheduling, teardown, half-close and unimplemented TCP DNS semantics.

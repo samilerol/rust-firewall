@@ -26,3 +26,7 @@ Dependency metadata was reviewed: fuzz dependencies declare MIT/Apache-2.0 alter
 ## DNS target
 
 `cargo +nightly fuzz run dns -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=4097 -seed=1` exercises query/response envelopes and multiple compression offsets, checks normalization idempotence and default-deny policy. Four generated seeds cover query, compressed answer, EDNS and cycle. CI now runs three pure targets sequentially (packet, engine, dns), each with a 30-second budget after a shared tool install. No target sends network traffic.
+
+## TCP stack target
+
+`cargo +nightly fuzz run tcp -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=1500 -seed=1` enables the transport fuzzing feature and drives deterministic in-memory IPv4/IPv6 smoltcp endpoints with control/sequence/window-pressure patterns plus checked raw TCP parsing. It asserts stream/packet bounds and emitted checksums; no upstream OS socket or OS entropy source is called. OS stream I/O is loopback-test evidence only. CI now runs four targets sequentially after one tool install, each budgeted at 30 seconds.
