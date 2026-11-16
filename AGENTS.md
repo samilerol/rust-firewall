@@ -12,4 +12,6 @@ Read README.md and docs/PROJECT_CONTEXT.md, ARCHITECTURE.md, SECURITY_MODEL.md, 
 - Use focused feature branches and reviewable commits/PRs. Do not merge without instruction. Never claim checks passed without evidence.
 - Keep interactive workloads light (8 GB workstation target). Heavy Android builds/fuzzing belong in bounded GitHub Actions jobs; do not create paid infrastructure.
 - No analytics, mandatory accounts or uploaded browsing history. Core functions remain offline.
-- Current priority: validate portable milestone 1, then evaluate safe Android TUN transport and lifecycle. Do not claim Android protection before integration/device tests.
+- Current priority: validate the drop-all Android diagnostic and evaluate bounded protected-socket TCP/UDP forwarding. Do not claim Android protection before integration/device tests.
+
+- The Android adapter documents a single JNI export lint exception; the portable crates still forbid unsafe. Preserve FD ownership on Android, bounded array copies, no-allow diagnostic result contract, and cancellation before close. Never relabel the diagnostic as a forwarding firewall or claim device tests passed from APK builds.
