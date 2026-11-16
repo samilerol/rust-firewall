@@ -29,6 +29,11 @@ jobs:
           rustup toolchain install stable --profile minimal --target aarch64-linux-android,x86_64-linux-android
       - name: Verify diagnostic VPN safety invariants
         run: python3 tools/check_android_diagnostic.py
+      - name: Host JVM protected UDP boundary checks
+        run: |
+          mkdir -p /tmp/netscope-udp
+          javac --release 17 -d /tmp/netscope-udp android/app/src/main/java/org/netscope/ngfw/ProtectedUdpSocketFactory.java tools/ProtectedUdpSocketSmoke.java
+          java -cp /tmp/netscope-udp ProtectedUdpSocketSmoke
       - name: Real JVM JNI boundary checks
         run: |
           cargo +stable build --locked -p netscope-android
