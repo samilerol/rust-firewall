@@ -11,3 +11,5 @@ Future: minimal Android VPNService and protected socket bridge -> Rust TUN parse
 Rootless mode is constrained by Android's VPN lifecycle and competing VPN apps. Rooted mode is a separate future adapter evaluating nftables/iptables/netfilter/eBPF against actual kernel support, with privilege checks, atomic apply, rollback and safe restoration. No kernel changes occur in milestone 1.
 
 `tools/core-bench` is a development-only fourth workspace package, using the three core libraries without changing their APIs. Its work is bounded by fixed sample counts and input sizes. See BENCHMARKS.md for measurement boundaries.
+
+The packet crate additionally exposes parse_checked with explicit Require/AllowIpv4UdpOmission policy and Verified/OmittedIpv4Udp result status. It first calls the structural parser, then validates header/pseudo-header/transport sums without allocation. This keeps offload/UDP omission choices at the platform boundary instead of silently changing all metadata callers.

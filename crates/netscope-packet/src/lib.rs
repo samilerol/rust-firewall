@@ -1,4 +1,4 @@
-//! Strict, allocation-free IP/TCP/UDP metadata parsing. Checksums are not verified.
+//! Allocation-free IP/TCP/UDP parsing, with explicit optional checksum validation.
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -22,6 +22,9 @@ pub enum ParseError {
     Unsupported,
     Fragmented,
     InvalidHeader,
+    InvalidIpv4Checksum,
+    InvalidTransportChecksum,
+    MissingTransportChecksum,
 }
 fn word(b: &[u8], at: usize) -> u16 {
     u16::from_be_bytes([b[at], b[at + 1]])
@@ -111,6 +114,87 @@ pub fn parse(b: &[u8]) -> Result<Packet, ParseError> {
         destination_port: word(t, 2),
         protocol,
         length: b.len(),
+    })
+}
+
+/// Whether an IPv4 UDP datagram may deliberately omit its optional checksum.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChecksumPolicy {
+    Require,
+    AllowIpv4UdpOmission,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportChecksum {
+    Verified,
+    OmittedIpv4Udp,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CheckedPacket {
+    pub packet: Packet,
+    pub transport_checksum: TransportChecksum,
+}
+
+// Fold on every addition: bounded arithmetic even for long datagrams.
+// Each call represents an even-aligned portion of the checksum stream;
+// only the final transport slice may have odd length.
+fn add_words(mut sum: u32, bytes: &[u8]) -> u32 {
+    let mut words = bytes.chunks_exact(2);
+    for word in &mut words {
+        sum += u32::from(u16::from_be_bytes([word[0], word[1]]));
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    if let Some(byte) = words.remainder().first() {
+        sum += u32::from(*byte) << 8;
+    }
+    (sum & 0xffff) + (sum >> 16)
+}
+
+/// Parse one structurally supported datagram, then verify IPv4 header (when present)
+/// and TCP/UDP pseudo-header+segment checksums. IPv6 UDP always requires a checksum;
+/// IPv4 UDP omission is accepted only by explicit policy and reported in the result.
+/// No checksum offload assumptions are made: partially checksummed buffers may fail.
+/// Checksums detect accidental corruption, not malicious modification or authenticity.
+pub fn parse_checked(b: &[u8], policy: ChecksumPolicy) -> Result<CheckedPacket, ParseError> {
+    let packet = parse(b)?;
+    let ipv4 = packet.source.is_ipv4();
+    let offset = if ipv4 { 20 } else { 40 };
+    if ipv4 && add_words(0, &b[..20]) != 0xffff {
+        return Err(ParseError::InvalidIpv4Checksum);
+    }
+    let segment = &b[offset..];
+    if packet.protocol == Protocol::Udp && word(segment, 6) == 0 {
+        if ipv4 && policy == ChecksumPolicy::AllowIpv4UdpOmission {
+            return Ok(CheckedPacket {
+                packet,
+                transport_checksum: TransportChecksum::OmittedIpv4Udp,
+            });
+        }
+        return Err(ParseError::MissingTransportChecksum);
+    }
+    let protocol = match packet.protocol {
+        Protocol::Tcp => 6,
+        Protocol::Udp => 17,
+    };
+    // parse already restricted transport length to the IP datagram's 16-bit length field.
+    let length = segment.len() as u32;
+    let mut sum = if ipv4 {
+        add_words(0, &b[12..20])
+    } else {
+        add_words(0, &b[8..40])
+    };
+    if ipv4 {
+        sum = add_words(sum, &[0, protocol]);
+        sum = add_words(sum, &(length as u16).to_be_bytes());
+    } else {
+        sum = add_words(sum, &length.to_be_bytes());
+        sum = add_words(sum, &[0, 0, 0, protocol]);
+    }
+    if add_words(sum, segment) != 0xffff {
+        return Err(ParseError::InvalidTransportChecksum);
+    }
+    Ok(CheckedPacket {
+        packet,
+        transport_checksum: TransportChecksum::Verified,
     })
 }
 
@@ -219,6 +303,8 @@ mod tests {
                     })
                     .collect();
                 let _ = parse(&b);
+                let _ = parse_checked(&b, ChecksumPolicy::Require);
+                let _ = parse_checked(&b, ChecksumPolicy::AllowIpv4UdpOmission);
             }
         }
     }
