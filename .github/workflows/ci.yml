@@ -1,0 +1,52 @@
+name: Rust CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [fmt, clippy, test, build]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Observe runner resources
+        run: |
+          nproc
+          free -h
+          df -h .
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: target
+          key: rust-${{ runner.os }}-${{ matrix.check }}-${{ hashFiles('Cargo.lock', '**/*.rs', '**/Cargo.toml') }}
+      - name: Run check
+        shell: bash
+        run: |
+          case '${{ matrix.check }}' in
+            fmt) cargo +stable fmt --check ;;
+            clippy) cargo +stable clippy --workspace --all-targets -- -D warnings ;;
+            test) cargo +stable test --workspace ;;
+            build) cargo +stable build --workspace ;;
+          esac
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install 1.85.0 --profile minimal
+      - run: cargo +1.85.0 test --workspace --locked
