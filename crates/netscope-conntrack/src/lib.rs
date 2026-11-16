@@ -66,6 +66,23 @@ impl Tracker {
         }
         self.clock = now;
         let before = self.flows.len();
+        if self
+            .order
+            .first()
+            .is_some_and(|(seen, _)| now - *seen >= self.timeout)
+            && self
+                .order
+                .last()
+                .is_some_and(|(seen, _)| now - *seen >= self.timeout)
+        {
+            // Every entry is due: avoid F tree removals and hash lookups.
+            // Clear the index before callbacks so a callback unwind cannot leave stale records.
+            self.order.clear();
+            for (id, _) in self.flows.drain() {
+                removed(id);
+            }
+            return Ok(before);
+        }
         while let Some((seen, id)) = self.order.first().copied() {
             if now - seen < self.timeout {
                 break;
@@ -275,5 +292,33 @@ mod tests {
                 assert!(t.order.contains(&(v.last_seen, *id)));
             }
         }
+    }
+    #[test]
+    fn expiry_callbacks_report_each_due_id_once_in_partial_and_full_batches() {
+        let mut t = Tracker::new(3, 10);
+        for i in 0..3 {
+            t.observe(flow(i), u64::from(i)).unwrap();
+        }
+        let mut removed = BTreeSet::new();
+        assert_eq!(
+            t.expire_with(10, |id| {
+                assert!(removed.insert(id));
+            }),
+            Ok(1)
+        );
+        assert_eq!(removed, BTreeSet::from([flow(0)]));
+        assert_eq!(
+            t.expire_with(12, |id| {
+                assert!(removed.insert(id));
+            }),
+            Ok(2)
+        );
+        assert_eq!(removed, BTreeSet::from([flow(0), flow(1), flow(2)]));
+        assert!(t.order.is_empty());
+        assert!(t.flows.is_empty());
+        assert_eq!(
+            t.expire_with(11, |_| panic!("reversed clock cannot emit removals")),
+            Err(TrackError::ClockReversed)
+        );
     }
 }
