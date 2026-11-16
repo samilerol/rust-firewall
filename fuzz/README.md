@@ -18,3 +18,7 @@ Four structural seeds plus the independent checksum test vectors (including maxi
 CI limits build parallelism to two, fuzzing to 30 seconds, RSS to 1024 MiB and the whole job to 15 minutes. Crash artifacts are uploaded only on failure with seven-day retention. No privileged tokens, production captures or paid runners. Generated corpus, artifacts and build output are gitignored. Reproduce a crash with `cargo +nightly fuzz run packet fuzz/artifacts/packet/<crash-file>` and turn any validated fix into a normal regression test. A smoke run does not establish complete parser safety.
 
 Dependency metadata was reviewed: fuzz dependencies declare MIT/Apache-2.0 alternatives, with NCSA additionally required by libfuzzer-sys. r-efi offers an MIT/Apache-2.0 alternative; LGPL is not required when choosing those terms. This metadata review is not a vulnerability advisory audit.
+
+## Stateful portable engine target
+
+`cargo +nightly fuzz run engine -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=1024 -seed=1` varies checked admissions, monotonic/reversed clocks, valid/invalid policy updates and resets under an eight-flow cap. It asserts bounded state and no acceptance under default deny. Both this target and the serializer/parser target are pure in-memory code and never open sockets. The CI job runs both targets sequentially after one toolchain/CLI install; each target has a 30-second budget. Parser fuzzing also checks generated UDP datagrams against strict checksum parsing.

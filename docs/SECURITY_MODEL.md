@@ -10,7 +10,7 @@ Protect parser availability, deterministic decisions and bounded flow state agai
 - Metadata -> policy: explicit default action, conjunctive filters, lowest priority then input order. Default-deny recommended. Policy construction rejects oversized lists and inverted port ranges atomically; it does not cap the memory used before construction. A caller must never turn a configuration error into an allow-all fallback. Public Packet can be manually constructed, so integration must only use successfully parsed datagrams.
 - Policy -> observation table: only caller-approved traffic should be recorded. Reverse directions are distinct. No TCP handshake/sequence/state validation, no implicit established-flow allow. Capacity rejection is explicit. Out-of-order clocks are rejected without mutation; expiry runs at age >= timeout.
 
-The portable core has no networking, persistent logs, secrets, update downloads or unsafe code; the separate JNI adapter has one documented symbol-export exception and an upstream FFI dependency. Dependency audit/license surface currently consists of workspace crates and Rust std only. Panic-on-allocation-failure and process resource limits remain host concerns. Random-input regression tests are not exhaustive fuzzing or a security proof.
+The parser/policy/conntrack/admission crates have no network I/O, persistent logs, secrets, update downloads or unsafe code; the portable UDP transport explicitly uses caller-protected OS sockets; the separate JNI adapter has one documented symbol-export exception and an upstream FFI dependency. The portable libraries use only Rust std/workspace dependencies; the separate Android adapter has locked JNI dependencies. Panic-on-allocation-failure and process resource limits remain host concerns. Random-input regression tests are not exhaustive fuzzing or a security proof.
 
 ## Future boundaries and limits
 
@@ -31,3 +31,7 @@ Checksums are corruption detection, not cryptographic authentication; an attacke
 ## Android diagnostic boundary
 
 See ANDROID_INTEGRATION.md for the current VPNService/JNI boundary, bounded buffers, single reader FD ownership, cancellation, denial-only return codes and unsupported forwarding/always-on behavior. App launch alone does not establish VPN; explicit Android consent is needed. All read traffic is discarded in diagnostic mode. No device leak/foreground/lifecycle claim is made from cross-compilation or JVM tests. Closing/crashing the VPN restores ordinary OS routing; the app cannot enforce external fail-closed behavior.
+
+## Engine and transport boundaries
+
+ENGINE_TRANSPORT.md specifies checked admission, atomic policy changes/revocation, bounded index/socket state, response flow association, explicit inbound allow and upstream protection before connect/send. Transport prechecks reject address aliases/unsupported scopes before opening sockets. Protection is a trusted platform callback, not proof that Android protect() ran. No transport socket is connected by the Android app in this milestone. Externally retained replies and OS socket buffers need a platform byte-budget; packet/flow count bounds are not a universal memory guarantee. Periodic expiry and network-change reset are caller obligations.

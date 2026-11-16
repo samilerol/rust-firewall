@@ -11,10 +11,19 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 netscope-packet = { path = "../crates/netscope-packet" }
+netscope-engine = { path = "../crates/netscope-engine" }
+netscope-policy = { path = "../crates/netscope-policy" }
 
 [[bin]]
 name = "packet"
 path = "fuzz_targets/packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "engine"
+path = "fuzz_targets/engine.rs"
 test = false
 doc = false
 bench = false

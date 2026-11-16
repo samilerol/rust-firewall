@@ -44,3 +44,9 @@ Local stable checks (fmt, Clippy with warnings denied, tests, build) passed with
 ## Android diagnostic follow-up
 
 Local stable fmt, Clippy, build and 22 Rust tests passed. Rust 1.85 tests also passed. This environment has a Java runtime but no javac/Android SDK, so the Java/native smoke and APK build were not executed locally. CI must run tools/JniSmoke.java with -Xcheck:jni against the host cdylib (nine real JNI contract checks: valid packet, truncated input, invalid bounds, null array, oversize capacity, pooled-buffer prefix and corruption), then cross-compile ARM64/x86_64 and build/lint/package the diagnostic APK. Consult actual current-head CI results; creating this job does not prove it passed. No emulator/physical-device lifecycle, routing/leak, battery, UI or stability test has run.
+
+## Portable engine/UDP follow-up
+
+Local stable fmt, Clippy with warnings denied, workspace tests/build and Rust 1.85 tests passed with 42 tests total. Tests include a 20,000-operation conntrack reference comparison, 2,048 policy decisions against the old precedence oracle, one-index-record invariants, response association/current inbound policy, transactional updates, capacity/time/reset failures and independent UDP checksum vectors. Nine real UDP socket tests use IPv4/IPv6 loopback only: echo/reply encoding, no sends on denial/failed protection, empty payloads, socket reuse, limit/expiry/reset/policy changes and oversized reply drops. No external server or device was used.
+
+Stateful engine and packet/serializer fuzz targets have separate 30-second CI budgets; the engine target never opens a socket. The 31-case local release smoke run and Python summary succeeded. Current-head hosted fuzz, reference comparison and normal CI require actual result inspection before reporting pass. Android source/UI was not modified; any existing Android CI run is regression build evidence only.

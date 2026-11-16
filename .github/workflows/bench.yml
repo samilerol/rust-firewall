@@ -37,6 +37,18 @@ jobs:
         run: |
           python3 tools/summarize_bench.py benchmark-results/raw.csv > benchmark-results/summary.md
           cat benchmark-results/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Checkout immutable pre-optimization reference
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: eade0426c803aabb59cd4626718143c75287324a
+          path: baseline-core
+          persist-credentials: false
+      - name: Run reference on the same runner and toolchain
+        run: |
+          cargo +stable run --release --locked --manifest-path baseline-core/Cargo.toml -p netscope-bench > benchmark-results/baseline.csv 2> benchmark-results/baseline-build.log
+          git -C baseline-core rev-parse HEAD > benchmark-results/baseline-commit.txt
+          python3 tools/compare_bench.py benchmark-results/baseline.csv benchmark-results/raw.csv > benchmark-results/comparison.md
+          cat benchmark-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
       - name: Preserve raw data and context
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5

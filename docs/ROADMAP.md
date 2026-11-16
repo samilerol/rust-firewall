@@ -9,3 +9,7 @@
 7. Threat updates, IDS/IPS with explainable confidence/false-positive controls, PCAP export with user retention/privacy controls.
 
 Compare performance against NetGuard, RethinkDNS and PCAPdroid on comparable devices and workloads before publishing claims. Extended fuzzing, dependency/license checks, coverage and Android builds will run as separately bounded CI jobs when introduced.
+
+## Active software track (APK/UI paused)
+
+Implemented: optimized one-record expiry index, compiled precedence, checked Engine and bounded IPv4/IPv6 UDP relay with loopback tests. Android diagnostic is unchanged and not wired to it. Next priorities: maintained TCP stack selection and stream lifecycle/backpressure; readiness scheduling and transport byte budgets; supported identity/network policy context; bounded serialized config; DNS/domain inspection. Keep device integration/production claims gated on actual device evidence.

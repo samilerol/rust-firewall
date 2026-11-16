@@ -71,7 +71,7 @@ pub enum PolicyError {
 }
 #[derive(Debug)]
 pub struct Policy {
-    rules: Vec<Rule>,
+    rules: Vec<(usize, Rule)>,
     default: Action,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,19 +102,16 @@ impl Policy {
                 return Err(PolicyError::InvalidPortRange { rule_index });
             }
         }
+        let mut rules: Vec<_> = rules.into_iter().enumerate().collect();
+        rules.sort_unstable_by_key(|(index, rule)| (rule.priority, *index));
         Ok(Self { rules, default })
     }
     pub fn decide(&self, packet: &Packet) -> Decision {
-        let matched = self
-            .rules
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.matches(packet))
-            .min_by_key(|(i, r)| (r.priority, *i));
+        let matched = self.rules.iter().find(|(_, r)| r.matches(packet));
         match matched {
             Some((i, r)) => Decision {
                 action: r.action,
-                rule_index: Some(i),
+                rule_index: Some(*i),
             },
             None => Decision {
                 action: self.default,
@@ -298,6 +295,56 @@ mod tests {
                     c.contains(IpAddr::V4(other.into())),
                     (base & mask) == (other & mask)
                 );
+            }
+        }
+    }
+    #[test]
+    fn compiled_precedence_matches_original_order_linear_oracle() {
+        let mut seed = 17u64;
+        for round in 0..64 {
+            let mut rules = Vec::new();
+            for _ in 0..96 {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                let mut r = rule(
+                    (seed % 8) as u32,
+                    if seed & 1 == 0 {
+                        Action::Allow
+                    } else {
+                        Action::Deny
+                    },
+                );
+                r.destination_port = Some((seed % 16) as u16..=(seed % 16 + 4) as u16);
+                rules.push(r);
+            }
+            let default = if round % 2 == 0 {
+                Action::Allow
+            } else {
+                Action::Deny
+            };
+            let policy = Policy::new(rules.clone(), default).unwrap();
+            for port in 0..32 {
+                let p = Packet {
+                    destination_port: port,
+                    ..packet()
+                };
+                let expected = rules
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.matches(&p))
+                    .min_by_key(|(i, r)| (r.priority, *i));
+                let decision = expected.map_or(
+                    Decision {
+                        action: default,
+                        rule_index: None,
+                    },
+                    |(i, r)| Decision {
+                        action: r.action,
+                        rule_index: Some(i),
+                    },
+                );
+                assert_eq!(policy.decide(&p), decision);
             }
         }
     }

@@ -3,6 +3,20 @@ use libfuzzer_sys::fuzz_target;
 use netscope_packet::{parse, parse_checked, ChecksumPolicy, Protocol, TransportChecksum};
 
 fuzz_target!(|bytes: &[u8]| {
+    for (source, destination) in [
+        ("192.0.2.1:1234", "198.51.100.2:53"),
+        ("[2001:db8::1]:1234", "[2001:db8::2]:53"),
+    ] {
+        if let Ok(encoded) = netscope_packet::udp::encode(
+            source.parse().unwrap(),
+            destination.parse().unwrap(),
+            bytes,
+        ) {
+            assert!(parse_checked(&encoded, ChecksumPolicy::Require).is_ok());
+            let offset = if encoded[0] >> 4 == 4 { 28 } else { 48 };
+            assert_eq!(&encoded[offset..], bytes);
+        }
+    }
     for policy in [
         ChecksumPolicy::Require,
         ChecksumPolicy::AllowIpv4UdpOmission,
