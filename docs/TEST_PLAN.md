@@ -24,3 +24,9 @@ Flow tests cover refresh, creation/last-seen timestamps, exact timeout boundary,
 Dedicated coverage reporting, true property-based generation, sustained parser fuzzing, performance benchmarks, cross-target builds and dependency audit automation are future work. No third-party runtime packages are present; review all future dependencies for advisories and license compatibility.
 
 No Android device, VPN, leak, forwarding, battery, memory or performance comparison test has been run. Future physical-device matrix must include IPv4/IPv6/DNS leaks, VPN loss, always-on/lockdown, Wi-Fi/cellular switching, app identity/unknown identity, TCP/UDP reliability, long-running memory/stability and battery use. Record device/OS, commit, settings, traffic generator and observations. Never convert a planned check into a passing result.
+
+## Core hardening follow-up
+
+The current local stable suite contains 12 passing tests, including new configuration rejection and CIDR property coverage. The CIDR oracle checks every IPv4/IPv6 prefix against every single-bit address difference (17,568 comparisons total). Tests verify the exact rule cap, stricter custom limits, zero limits, attempts to exceed the hard ceiling and rejection of inverted source/destination ranges.
+
+The isolated fuzz workspace adds address-sanitized raw packet testing with structural success invariants and truncation/appending rejection properties. See fuzz/README.md for commands and constraints. A bounded CI run is separate evidence from local stable tests; check the PR's actual Actions result. Benchmarking, checksum validation and broad property/fuzz coverage remain outstanding.

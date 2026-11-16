@@ -62,6 +62,14 @@ impl Rule {
                 .is_none_or(|r| r.contains(&packet.destination_port))
     }
 }
+/// Absolute rule-count ceiling; callers may impose a smaller bound.
+pub const MAX_RULES: usize = 4096;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PolicyError {
+    TooManyRules { limit: usize },
+    InvalidPortRange { rule_index: usize },
+}
+#[derive(Debug)]
 pub struct Policy {
     rules: Vec<Rule>,
     default: Action,
@@ -73,8 +81,28 @@ pub struct Decision {
 }
 impl Policy {
     /// Rules are immutable after construction; index refers to original input order.
-    pub fn new(rules: Vec<Rule>, default: Action) -> Self {
-        Self { rules, default }
+    pub fn new(rules: Vec<Rule>, default: Action) -> Result<Self, PolicyError> {
+        Self::with_limit(rules, default, MAX_RULES)
+    }
+    /// Consumes already-allocated rules. Future file loaders must bound input before allocation.
+    /// Rejects the entire configuration; never silently truncates or skips invalid rules.
+    pub fn with_limit(
+        rules: Vec<Rule>,
+        default: Action,
+        limit: usize,
+    ) -> Result<Self, PolicyError> {
+        let limit = limit.min(MAX_RULES);
+        if rules.len() > limit {
+            return Err(PolicyError::TooManyRules { limit });
+        }
+        for (rule_index, rule) in rules.iter().enumerate() {
+            if rule.source_port.as_ref().is_some_and(|r| r.is_empty())
+                || rule.destination_port.as_ref().is_some_and(|r| r.is_empty())
+            {
+                return Err(PolicyError::InvalidPortRange { rule_index });
+            }
+        }
+        Ok(Self { rules, default })
     }
     pub fn decide(&self, packet: &Packet) -> Decision {
         let matched = self
@@ -144,7 +172,7 @@ mod tests {
     fn overlap_priority_ties_and_defaults() {
         let p = packet();
         assert_eq!(
-            Policy::new(vec![], Action::Deny).decide(&p).action,
+            Policy::new(vec![], Action::Deny).unwrap().decide(&p).action,
             Action::Deny
         );
         let mut allow = rule(5, Action::Allow);
@@ -152,7 +180,8 @@ mod tests {
         let policy = Policy::new(
             vec![rule(10, Action::Deny), allow.clone(), rule(5, Action::Deny)],
             Action::Deny,
-        );
+        )
+        .unwrap();
         assert_eq!(
             policy.decide(&p),
             Decision {
@@ -162,6 +191,7 @@ mod tests {
         );
         assert_eq!(
             Policy::new(vec![rule(5, Action::Deny), allow], Action::Allow)
+                .unwrap()
                 .decide(&p)
                 .action,
             Action::Deny
@@ -201,6 +231,74 @@ mod tests {
         ];
         for v in variants {
             assert!(!r.matches(&v));
+        }
+    }
+    #[test]
+    fn configuration_limits_and_invalid_ranges_reject_whole_policy() {
+        assert!(Policy::with_limit(vec![], Action::Deny, 0).is_ok());
+        assert_eq!(
+            Policy::with_limit(vec![rule(1, Action::Deny)], Action::Allow, 0).unwrap_err(),
+            PolicyError::TooManyRules { limit: 0 }
+        );
+        assert!(Policy::with_limit(vec![rule(1, Action::Deny)], Action::Allow, 1).is_ok());
+        assert!(Policy::new(vec![rule(1, Action::Deny); MAX_RULES], Action::Deny).is_ok());
+        assert_eq!(
+            Policy::with_limit(
+                vec![rule(1, Action::Deny); MAX_RULES + 1],
+                Action::Allow,
+                usize::MAX
+            )
+            .unwrap_err(),
+            PolicyError::TooManyRules { limit: MAX_RULES }
+        );
+        for source in [true, false] {
+            let mut invalid = rule(0, Action::Deny);
+            let reversed = RangeInclusive::new(100, 99);
+            if source {
+                invalid.source_port = Some(reversed);
+            } else {
+                invalid.destination_port = Some(reversed);
+            }
+            assert_eq!(
+                Policy::new(vec![rule(5, Action::Allow), invalid], Action::Allow).unwrap_err(),
+                PolicyError::InvalidPortRange { rule_index: 1 }
+            );
+        }
+    }
+    #[test]
+    fn cidr_prefix_properties_for_every_prefix() {
+        // Independent mask oracle, all prefix lengths and every one-bit address difference.
+        let base = 0x20010db812345678fedcba9876543210u128;
+        for prefix in 0..=128u8 {
+            let c = Cidr::new(IpAddr::V6(base.into()), prefix).unwrap();
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - prefix)
+            };
+            for bit in 0..128 {
+                let other = base ^ (1u128 << bit);
+                assert_eq!(
+                    c.contains(IpAddr::V6(other.into())),
+                    (base & mask) == (other & mask)
+                );
+            }
+        }
+        let base = 0xc0000201u32;
+        for prefix in 0..=32u8 {
+            let c = Cidr::new(IpAddr::V4(base.into()), prefix).unwrap();
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            for bit in 0..32 {
+                let other = base ^ (1u32 << bit);
+                assert_eq!(
+                    c.contains(IpAddr::V4(other.into())),
+                    (base & mask) == (other & mask)
+                );
+            }
         }
     }
 }

@@ -24,7 +24,8 @@ fn parse_decide_then_track_only_allowed_packets() {
             destination_port: Some(53..=53),
         }],
         Action::Deny,
-    );
+    )
+    .unwrap();
     let mut tracker = Tracker::new(1, 10);
     for (port, expected) in [(53u16, Action::Allow), (443, Action::Deny)] {
         bytes[22..24].copy_from_slice(&port.to_be_bytes());
