@@ -83,3 +83,6 @@ mod tests {
         assert_eq!(inspect(&bytes), DENIED_PACKET);
     }
 }
+
+#[cfg(unix)]
+mod socket_protection;
