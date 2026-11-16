@@ -10,7 +10,7 @@ An independent, privacy-first, offline-first Android firewall project, Apache-2.
 
 ## Build and verify
 
-Stable Rust; minimum supported version 1.85. The three portable libraries have no third-party runtime dependencies. The separate Android adapter uses jni.
+Stable Rust; minimum supported version 1.85. The parser/policy/conntrack/engine/DNS libraries use std/internal workspace dependencies. TCP transport uses pinned smoltcp/socket2/getrandom; the separate Android adapter uses jni.
 
 ```sh
 cargo fmt --check
