@@ -4,7 +4,7 @@
 
 The Android project is a **drop-all diagnostic VPN**, not a usable forwarding firewall. API 26 minimum, API 35 target/compile, ARM64 and x86_64. The temporary framework Java Activity is a platform permission/start/stop screen, not the planned product UI. Rust-native egui/winit/Android lifecycle integration remains unevaluated for the final UI; Flutter is not used.
 
-The user sees an explicit traffic-blocking warning before requesting Android VPN consent. The foreground notification identifies the diagnostic and provides Stop. START_NOT_STICKY and SUPPORTS_ALWAYS_ON=false intentionally prevent advertising unattended/always-on protection. No app rules, DNS filtering, root enforcement or forwarder is exposed. Existing VPN apps may conflict. System-exempt traffic and device-specific routing behavior have not been measured; no leak-free or fail-closed claim is made.
+The user sees an explicit traffic-blocking warning before requesting Android VPN consent. On API 33+, the diagnostic also requires notification permission before its user-initiated start, so stop controls can be shown. The foreground notification identifies the diagnostic and provides Stop. START_NOT_STICKY and SUPPORTS_ALWAYS_ON=false intentionally prevent advertising unattended/always-on protection. No app rules, DNS filtering, root enforcement or forwarder is exposed. Existing VPN apps may conflict. System-exempt traffic and device-specific routing behavior have not been measured; no leak-free or fail-closed claim is made.
 
 ## Packet and resource ownership
 
