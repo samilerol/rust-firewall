@@ -40,6 +40,12 @@ jobs:
           mkdir -p /tmp/netscope-jni
           javac --release 17 -d /tmp/netscope-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/JniSmoke.java
           java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-jni JniSmoke crates/netscope-packet/tests/fixtures/v4-tcp-odd.hex
+      - name: Rust-owned sockets JNI protection contract
+        run: |
+          cargo +stable build --locked -p netscope-android
+          mkdir -p /tmp/netscope-native-protect
+          javac --release 17 -d /tmp/netscope-native-protect android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/NativeSocketProtectionSmoke.java
+          java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-native-protect NativeSocketProtectionSmoke
       - name: Install Android build components
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"'
       - name: Build Rust JNI for both ABIs

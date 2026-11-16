@@ -187,6 +187,8 @@ dependencies = [
  "jni",
  "netscope-packet",
  "netscope-policy",
+ "netscope-transport",
+ "socket2",
 ]
 
 [[package]]
