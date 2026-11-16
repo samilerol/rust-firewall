@@ -1,9 +1,10 @@
 //! Lifecycle-scoped JavaVM/GlobalRef adapter for Android VPN socket protection.
 //! This only protects Rust-created sockets; it does not drive TUN traffic.
-use jni::{objects::{GlobalRef, JObject, JValue}, JNIEnv, JavaVM};
-use netscope_transport::{
-    fd_protection::FdProtector, tcp::TcpSocketProtector, SocketProtector,
+use jni::{
+    objects::{GlobalRef, JObject, JValue},
+    JNIEnv, JavaVM,
 };
+use netscope_transport::{fd_protection::FdProtector, tcp::TcpSocketProtector, SocketProtector};
 use socket2::Socket;
 use std::{
     io,
@@ -38,15 +39,11 @@ impl AndroidVpnProtector {
         if fd < 0 || !self.active.load(Ordering::SeqCst) {
             return Ok(false);
         }
-        let mut env = self.vm.attach_current_thread().map_err(|_| {
-            io::Error::other("unable to attach socket protector to Java VM")
-        })?;
-        let result = env.call_method(
-            self.service.as_obj(),
-            "protect",
-            "(I)Z",
-            &[JValue::Int(fd)],
-        );
+        let mut env = self
+            .vm
+            .attach_current_thread()
+            .map_err(|_| io::Error::other("unable to attach socket protector to Java VM"))?;
+        let result = env.call_method(self.service.as_obj(), "protect", "(I)Z", &[JValue::Int(fd)]);
         let approved = match result {
             Ok(value) => value.z().unwrap_or(false),
             Err(_) => {
