@@ -76,3 +76,47 @@ impl TcpSocketProtector for AndroidVpnProtector {
         TcpSocketProtector::protect(&FdProtector::new(|fd| self.protect_fd(fd)), socket)
     }
 }
+
+#[allow(unsafe_code)]
+#[no_mangle]
+pub extern "system" fn Java_org_netscope_ngfw_NativeCore_probeProtectedSocketsOnWorker(
+    mut env: JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+    service: JObject<'_>,
+    revoke_before_use: jni::sys::jboolean,
+) -> jni::sys::jint {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if service.is_null() {
+            return -1;
+        }
+        let Ok(protector) = AndroidVpnProtector::new(&mut env, &service) else {
+            return -1;
+        };
+        let worker = std::thread::spawn(move || {
+            if revoke_before_use != 0 {
+                protector.revoke();
+            }
+            let Ok(udp) = UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)) else {
+                return -1;
+            };
+            if SocketProtector::protect(&protector, &udp).is_err() {
+                return -1;
+            }
+            let Ok(tcp) = Socket::new(
+                socket2::Domain::IPV4,
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            ) else {
+                return -1;
+            };
+            if TcpSocketProtector::protect(&protector, &tcp).is_err() {
+                return -1;
+            }
+            // Both actual Rust-owned native socket FDs were approved.
+            // Deliberately no connect or send; both sockets close on exit.
+            0
+        });
+        worker.join().unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
+}
