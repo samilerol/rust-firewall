@@ -46,13 +46,10 @@ fn probe(env: &mut JNIEnv<'_>, queue: JObject<'_>, ipv6: bool) -> jint {
         queue,
         "offer",
         "([BI)Z",
-        &[
-            JValue::Object(&array_object),
-            JValue::Int(bytes.len() as jint),
-        ],
+        &[JValue::Object(&array_object), JValue::Int(bytes.len() as jint)],
     );
     match result {
-        Ok(value) if value.z() == Ok(true) => OK,
+        Ok(value) if matches!(value.z(), Ok(true)) => OK,
         _ => {
             if env.exception_check().unwrap_or(false) {
                 let _ = env.exception_clear();
