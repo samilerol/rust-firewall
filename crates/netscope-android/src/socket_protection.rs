@@ -6,16 +6,14 @@ use jni::{
     sys::jint,
     JNIEnv,
 };
-use netscope_transport::{
-    fd_protection::FdProtector, tcp::TcpSocketProtector, SocketProtector,
-};
+use netscope_transport::{fd_protection::FdProtector, tcp::TcpSocketProtector, SocketProtector};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     cell::RefCell,
     io,
     net::{Ipv4Addr, UdpSocket},
-    panic::{catch_unwind, AssertUnwindSafe},
     os::fd::RawFd,
+    panic::{catch_unwind, AssertUnwindSafe},
 };
 
 const PROTECTION_OK: jint = 0;
@@ -31,12 +29,7 @@ fn probe(env: &mut JNIEnv<'_>, service: JObject<'_>) -> jint {
     let cell = RefCell::new(env);
     let callback = |fd: RawFd| -> io::Result<bool> {
         let mut env = cell.borrow_mut();
-        let result = env.call_method(
-            &service,
-            "protect",
-            "(I)Z",
-            &[JValue::Int(fd)],
-        );
+        let result = env.call_method(&service, "protect", "(I)Z", &[JValue::Int(fd)]);
         match result {
             Ok(value) => value
                 .z()
@@ -83,6 +76,5 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_probeProtectedSockets(
     _class: JClass<'_>,
     service: JObject<'_>,
 ) -> jint {
-    catch_unwind(AssertUnwindSafe(|| probe(&mut env, service)))
-        .unwrap_or(PROTECTION_REFUSED)
+    catch_unwind(AssertUnwindSafe(|| probe(&mut env, service))).unwrap_or(PROTECTION_REFUSED)
 }
