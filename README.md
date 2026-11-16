@@ -1,6 +1,6 @@
 # NetScope Rust NGFW
 
-An independent, privacy-first, offline-first Android firewall project, Apache-2.0 licensed. Milestone 1 is a portable Rust library workspace, **not an Android firewall application**. It does not currently intercept or protect traffic.
+An independent, privacy-first, offline-first Android firewall project, Apache-2.0 licensed. The portable Rust core is accompanied by an experimental Android **drop-all diagnostic VPN**, not a forwarding firewall. Android behavior has not been device-tested.
 
 ## Implemented
 
@@ -10,7 +10,7 @@ An independent, privacy-first, offline-first Android firewall project, Apache-2.
 
 ## Build and verify
 
-Stable Rust; minimum supported version 1.85. No third-party runtime dependencies.
+Stable Rust; minimum supported version 1.85. The three portable libraries have no third-party runtime dependencies. The separate Android adapter uses jni.
 
 ```sh
 cargo fmt --check
@@ -25,7 +25,7 @@ See [architecture](docs/ARCHITECTURE.md), [security model](docs/SECURITY_MODEL.m
 
 ## Limitations
 
-No socket forwarding, JNI, Android UI/service, app attribution, DNS filtering, DPI, IDS, kernel adapter or packet enforcement exists. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
+No socket forwarding, app attribution, DNS filtering, DPI, IDS or kernel adapter exists. A minimal Android consent/service/JNI diagnostic discards all read datagrams; it is not a usable forwarding firewall. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
 
 This public project must never receive private code from `samilerol/netscope`.
 
@@ -42,3 +42,7 @@ A separate [parser fuzz target](fuzz/README.md) exercises untrusted datagrams wi
 ## Explicit checksum validation
 
 Use `netscope_packet::parse_checked(bytes, ChecksumPolicy::Require)` at a boundary requiring complete wire checksums. It returns the packet metadata plus `TransportChecksum::Verified`, or a structural/checksum error. `ChecksumPolicy::AllowIpv4UdpOmission` permits the IPv4 UDP standard's optional zero checksum and reports `OmittedIpv4Udp`; IPv6 UDP zero is always rejected. `parse` remains metadata-only for callers that deliberately choose not to verify checksums. Neither API authenticates traffic. Checksum offload may leave partial checksums in OS buffers; determine the actual platform contract before using strict validation on a TUN path.
+
+## Android diagnostic milestone
+
+`android/` contains a consent/start/stop screen and VPNService; `netscope-android` provides the bounded JNI inspection bridge. **Starting the diagnostic VPN blocks routed traffic: there is no forwarding.** See [Android integration](docs/ANDROID_INTEGRATION.md) for ownership, APK build/CI, limitations and outstanding physical-device validation. Java is limited to platform/lifecycle integration and this temporary diagnostic screen; the final Rust-native UI is not implemented.
