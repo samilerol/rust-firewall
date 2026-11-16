@@ -32,3 +32,18 @@ for path in fixtures.glob('*.hex'):
     (out / ('checksum-' + path.stem)).write_bytes(bytes.fromhex(path.read_text()))
 for path in fixtures.glob('*.bin'):
     (out / ('checksum-' + path.stem)).write_bytes(path.read_bytes())
+
+dns_out = Path(__file__).parent / 'corpus' / 'dns'
+dns_out.mkdir(parents=True, exist_ok=True)
+query = bytes.fromhex('123401000001000000000000074578616d706c6503434f4d0000010001')
+response = bytearray(query)
+response[2:4] = bytes.fromhex('8180')
+response[7] = 1
+response += bytes.fromhex('c00c000100010000003c000401020304')
+(dns_out / 'query').write_bytes(query)
+(dns_out / 'compressed-answer').write_bytes(response)
+(dns_out / 'compression-cycle').write_bytes(bytes(12) + bytes.fromhex('c00c'))
+edns = bytearray(query)
+edns[11] = 1
+edns += bytes.fromhex('00002904d0000080000004000a0000')
+(dns_out / 'edns-query').write_bytes(edns)

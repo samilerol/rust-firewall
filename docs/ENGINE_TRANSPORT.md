@@ -41,3 +41,7 @@ A pure stateful fuzz target varies packet admissions, clocks, policy replacement
 Next: select a maintained Rust TCP/IP implementation after security/license/MSRV review; add TCP stream lifecycle, bounded per-flow/global buffers, backpressure and retransmission/device tests. Add UDP readiness multiplexing, explicit application/network identity policies, safe serialized configuration limits, DNS/domain policy and protected upstream socket integration. Do not treat this UDP relay as complete NGFW/TCP functionality.
 
 The first hosted comparison exposed a bulk-drain regression from per-entry tree/hash removal. An all-expired fast path now clears the index and drains the map linearly, delivering each removal callback once (callback order unspecified). Callbacks and platform hooks are trusted, synchronous code and must not panic/block indefinitely. Final claims must use the post-fix CI run.
+
+## Optional DNS guard
+
+set_dns_filter activates bounded classic question parsing/domain policy only on selected destination ports. It retains at most one query per existing flow, accepts identical retries and rejects conflicting concurrent questions. Pending IDs/questions must match responses and are consumed/cleared with socket lifecycle. Domain allow never overrides engine policy. See DNS_POLICY.md; unselected ports, encrypted/TCP DNS and alias-chain/domain-to-IP controls are out of scope.

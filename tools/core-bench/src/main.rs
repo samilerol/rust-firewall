@@ -1,5 +1,6 @@
 //! Bounded, dependency-free microbenchmarks. CSV timings are observations, not guarantees.
 use netscope_conntrack::{FlowId, Tracker};
+use netscope_dns::{DomainName, DomainPolicy, Match as DomainMatch, Rule as DomainRule};
 use netscope_packet::{parse, Packet, Protocol};
 use netscope_policy::{Action, Policy, Rule};
 use std::{hint::black_box, time::Instant};
@@ -91,6 +92,16 @@ fn main() {
     println!("case,sample,operations,elapsed_ns,ns_per_operation");
     let bytes = datagram(false, true);
     let packet = parse(&bytes).unwrap();
+    let dns_query = vec![
+        0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, b'E', b'x', b'a', b'm', b'p', b'l', b'e', 3,
+        b'C', b'O', b'M', 0, 0, 1, 0, 1,
+    ];
+    let mut dns_response = dns_query.clone();
+    dns_response[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+    dns_response[7] = 1;
+    dns_response.extend_from_slice(&[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 1, 2, 3, 4]);
+    assert!(netscope_dns::parse_query(&dns_query).is_ok());
+    assert!(netscope_dns::parse_response(&dns_response).is_ok());
     for sample in 0..=samples {
         for v6 in [false, true] {
             for tcp in [false, true] {
@@ -134,6 +145,42 @@ fn main() {
                     sample,
                     iterations,
                     || policy.decide(black_box(&packet)),
+                );
+            }
+        }
+        measure("dns_parse_query", sample, iterations, || {
+            netscope_dns::parse_query(black_box(&dns_query))
+        });
+        measure("dns_parse_compressed_response", sample, iterations, || {
+            netscope_dns::parse_response(black_box(&dns_response))
+        });
+        for count in [64, 4096] {
+            let mut rules: Vec<_> = (0..count)
+                .map(|i| DomainRule {
+                    name: DomainName::new(&format!("unused{i}.example")).unwrap(),
+                    kind: DomainMatch::Exact,
+                    priority: 1,
+                    action: Action::Deny,
+                })
+                .collect();
+            rules[count - 1] = DomainRule {
+                name: DomainName::new("blocked.example").unwrap(),
+                kind: DomainMatch::DomainAndSubdomains,
+                priority: 0,
+                action: Action::Deny,
+            };
+            let policy = DomainPolicy::new(rules, Action::Allow).unwrap();
+            for (label, name, action) in [
+                ("hit", "a.blocked.example", Action::Deny),
+                ("miss", "safe.test", Action::Allow),
+            ] {
+                let name = DomainName::new(name).unwrap();
+                assert_eq!(policy.decide(&name).action, action);
+                measure(
+                    &format!("dns_rules_{count}_{label}"),
+                    sample,
+                    iterations,
+                    || policy.decide(black_box(&name)),
                 );
             }
         }

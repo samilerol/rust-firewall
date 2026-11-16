@@ -35,3 +35,7 @@ See ANDROID_INTEGRATION.md for the current VPNService/JNI boundary, bounded buff
 ## Engine and transport boundaries
 
 ENGINE_TRANSPORT.md specifies checked admission, atomic policy changes/revocation, bounded index/socket state, response flow association, explicit inbound allow and upstream protection before connect/send. Transport prechecks reject address aliases/unsupported scopes before opening sockets. Protection is a trusted platform callback, not proof that Android protect() ran. No transport socket is connected by the Android app in this milestone. Externally retained replies and OS socket buffers need a platform byte-budget; packet/flow count bounds are not a universal memory guarantee. Periodic expiry and network-change reset are caller obligations.
+
+## DNS question boundary
+
+DNS_POLICY.md specifies message/name/record/compression/EDNS budgets and the ASCII profile, explicit port activation, label-boundary rules and transaction correlation. Malformed/blocked selected-port queries are not sent. The guard does not validate every RR semantic, DNSSEC/TSIG/AD/Cookies, aliases, rebinding, direct IP access, DNS on other ports or encrypted DNS. One pending question per flow is ephemeral local state, bounded by active mappings. Outbound/inbound packet policy and socket protection remain required; a domain allow is never network authorization.

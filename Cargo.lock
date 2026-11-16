@@ -100,6 +100,7 @@ name = "netscope-bench"
 version = "0.1.0"
 dependencies = [
  "netscope-conntrack",
+ "netscope-dns",
  "netscope-packet",
  "netscope-policy",
 ]
@@ -109,6 +110,13 @@ name = "netscope-conntrack"
 version = "0.1.0"
 dependencies = [
  "netscope-packet",
+ "netscope-policy",
+]
+
+[[package]]
+name = "netscope-dns"
+version = "0.1.0"
+dependencies = [
  "netscope-policy",
 ]
 
@@ -137,6 +145,7 @@ name = "netscope-transport"
 version = "0.1.0"
 dependencies = [
  "netscope-conntrack",
+ "netscope-dns",
  "netscope-engine",
  "netscope-packet",
  "netscope-policy",

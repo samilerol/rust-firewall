@@ -77,6 +77,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "netscope-dns"
+version = "0.1.0"
+dependencies = [
+ "netscope-policy",
+]
+
+[[package]]
 name = "netscope-engine"
 version = "0.1.0"
 dependencies = [
@@ -90,6 +97,7 @@ name = "netscope-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "netscope-dns",
  "netscope-engine",
  "netscope-packet",
  "netscope-policy",
