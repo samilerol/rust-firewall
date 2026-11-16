@@ -1,12 +1,12 @@
 # Packet fuzzing
 
-Isolated development-only workspace, not a production dependency. Requires nightly Rust, cargo-fuzz 0.13.1 and a C++ compiler. libfuzzer-sys is exactly pinned and fuzz/Cargo.lock is committed. Core code still forbids unsafe; the fuzz runtime uses upstream instrumentation/unsafe code.
+Isolated development-only workspace, not a production dependency. Requires nightly Rust, cargo-fuzz 0.13.2 and a C++ compiler. libfuzzer-sys is exactly pinned and fuzz/Cargo.lock is committed. Core code still forbids unsafe; the fuzz runtime uses upstream instrumentation/unsafe code.
 
 From the repository root:
 
 ```sh
 rustup toolchain install nightly --profile minimal
-cargo +nightly install cargo-fuzz --version 0.13.1 --locked
+cargo +stable install cargo-fuzz --version 0.13.2 --locked
 cargo +nightly fetch --manifest-path fuzz/Cargo.toml --locked
 python3 fuzz/seeds.py
 cargo +nightly fuzz run packet -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=65575 -seed=1

@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install nightly --profile minimal
-      - run: cargo +nightly install cargo-fuzz --version 0.13.1 --locked
+      - run: cargo +stable install cargo-fuzz --version 0.13.2 --locked
       - run: cargo +nightly fetch --manifest-path fuzz/Cargo.toml --locked
       - run: python3 fuzz/seeds.py
       - name: Fuzz packet parser with address sanitizer
