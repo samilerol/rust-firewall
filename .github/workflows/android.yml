@@ -27,6 +27,8 @@ jobs:
           nproc
           free -h
           rustup toolchain install stable --profile minimal --target aarch64-linux-android,x86_64-linux-android
+      - name: Verify diagnostic VPN safety invariants
+        run: python3 tools/check_android_diagnostic.py
       - name: Real JVM JNI boundary checks
         run: |
           cargo +stable build --locked -p netscope-android
