@@ -86,3 +86,6 @@ mod tests {
 
 #[cfg(unix)]
 mod socket_protection;
+
+#[cfg(unix)]
+mod vpn_protector;
