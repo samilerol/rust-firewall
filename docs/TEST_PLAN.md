@@ -9,7 +9,7 @@ Stable Rust 1.100.0, Linux x86_64:
 - `cargo test --workspace`: 10 tests passed, no failures; three empty doctest suites.
 - `cargo build --workspace`: passed.
 
-`cargo +1.85.0 test --workspace --locked` verifies the declared minimum toolchain separately. GitHub CI has independent stable fmt/clippy/test/build jobs and an MSRV job. Local results do not establish remote CI status; consult the actual GitHub Actions run.
+`cargo +1.85.0 test --workspace --locked`: passed (10 tests). The initial [GitHub Actions run](https://github.com/samilerol/rust-firewall/actions/runs/43885928166) also passed all five jobs. GitHub CI has independent stable fmt/clippy/test/build jobs and an MSRV job. Local results do not establish remote CI status; consult the actual GitHub Actions run.
 
 ## Reproducible coverage
 
