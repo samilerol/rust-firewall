@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/netscope-packet", "crates/netscope-policy", "crates/netscope-conntrack"]
+members = ["crates/netscope-packet", "crates/netscope-policy", "crates/netscope-conntrack", "tools/core-bench"]
 exclude = ["fuzz"]
 resolver = "2"
 

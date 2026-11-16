@@ -9,3 +9,5 @@
 
 - ADR-007: Reject the entire policy on excess rules or inverted port ranges. `Policy::new` is now fallible; 4096 is a conservative engineering ceiling, not a measured latency guarantee. Smaller caller limits are supported; external file byte limits remain future work.
 - ADR-008: Isolate fuzz-only dependencies and nightly from the stable/MSRV core workspace. Retain a fuzz lockfile and deterministic structural seeds. Use bounded address-sanitized CI smoke testing; core code continues to forbid unsafe. Exhaustive CIDR prefix/bit properties use independent mask oracles without adding a property-testing runtime dependency.
+
+- ADR-009: Add a dependency-free release microbenchmark binary rather than nightly bench APIs or a framework dependency. Output raw per-sample CSV and preserve machine/toolchain context; exclude warmup from summaries. Include real expiry scans and allocation during insertion. No timing regression gate until variation is measured across repeated runs; no optimization is bundled with this baseline.

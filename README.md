@@ -34,3 +34,7 @@ This public project must never receive private code from `samilerol/netscope`.
 `Policy::new` now returns `Result<Policy, PolicyError>`; callers must handle configuration rejection without replacing a previous policy with implicit allow. `Policy::with_limit` can impose a smaller rule cap. The input Vec is already allocated: this is not an input-file size limit.
 
 A separate [parser fuzz target](fuzz/README.md) exercises untrusted datagrams with address sanitizer. Its CI smoke run is bounded to 30 seconds; this is not exhaustive security validation. CIDR property tests cover every prefix length and single-bit address changes without a new core dependency.
+
+## Performance baseline harness
+
+`tools/core-bench` is a development-only workspace binary with 31 synthetic parser/policy/flow scenarios, release-only execution and CSV output. `cargo run --release --locked -p netscope-bench -- --smoke` checks the harness quickly. See [benchmark methodology](docs/BENCHMARKS.md) for full runs, warmup/sample interpretation, CI artifacts and limitations. These are host library microbenchmarks, not Android performance measurements.
