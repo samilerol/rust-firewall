@@ -36,7 +36,7 @@ jobs:
         shell: bash
         run: |
           case '${{ matrix.check }}' in
-            fmt) cargo +stable fmt --check ;;
+            fmt) cargo +stable fmt --check && cargo +stable fmt --manifest-path fuzz/Cargo.toml --check ;;
             clippy) cargo +stable clippy --workspace --all-targets -- -D warnings ;;
             test) cargo +stable test --workspace ;;
             build) cargo +stable build --workspace ;;

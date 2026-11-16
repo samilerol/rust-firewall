@@ -2,7 +2,7 @@
 
 Milestone 1 has three crates. Packet parsing returns owned fixed-size metadata without allocating; policy consumes that metadata and returns an action plus original matched-rule index; conntrack optionally records a directional flow after policy allows it. Each packet must be reevaluated against the current policy. Reverse traffic needs an explicit policy; tracking does not grant access.
 
-Policy scans immutable input rules in O(R); ties use input index. CIDR host bits are ignored by comparison, and address families never cross-match. Inverted port ranges match nothing. Configuration loading and rule count limits must be added before accepting external policy files.
+Policy scans immutable input rules in O(R); ties use input index. CIDR host bits are ignored by comparison, and address families never cross-match. Policy construction rejects inverted port ranges and more than 4096 rules (or a smaller caller-provided limit). Construction is fallible; reject the entire update on error and retain the previously valid policy. Input Vec allocation happens before validation, so byte/record limits are still required in a future external configuration loader.
 
 Tracking uses a HashMap, limited by configured maximum entries; Rust allocator overhead means this is an entry bound, not a byte bound. Every observation expires old entries in O(F), then updates or inserts. Caller-supplied ticks must be monotonic, in one consistent unit. Capacity/zero-timeout errors require caller handling, never implicit allow. Queries reflect the last expire/observe call; callers must expire before querying current liveness. This is not TCP validation, NAT, stream reassembly or UDP forwarding.
 

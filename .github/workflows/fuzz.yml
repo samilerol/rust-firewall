@@ -1,0 +1,36 @@
+name: Parser fuzz smoke
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  packet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install nightly --profile minimal
+      - run: cargo +nightly install cargo-fuzz --version 0.13.1 --locked
+      - run: cargo +nightly fetch --manifest-path fuzz/Cargo.toml --locked
+      - run: python3 fuzz/seeds.py
+      - name: Fuzz packet parser with address sanitizer
+        run: cargo +nightly fuzz run packet -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=65575 -seed=1
+      - name: Ensure dependency resolution stayed locked
+        run: git diff --exit-code -- fuzz/Cargo.lock
+      - name: Preserve crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: packet-fuzz-crashes
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
