@@ -18,3 +18,5 @@ unsafe_op_in_unsafe_fn = "deny"
 jni = { version = "=0.21.1", default-features = false }
 netscope-packet = { path = "../netscope-packet" }
 netscope-policy = { path = "../netscope-policy" }
+netscope-transport = { path = "../netscope-transport" }
+socket2 = "=0.6.5"
