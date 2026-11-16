@@ -9,9 +9,18 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+fuzzing = []
+
 [dependencies]
 netscope-packet = { path = "../netscope-packet" }
 netscope-policy = { path = "../netscope-policy" }
 netscope-conntrack = { path = "../netscope-conntrack" }
 netscope-engine = { path = "../netscope-engine" }
 netscope-dns = { path = "../netscope-dns" }
+smoltcp = { version = "=0.12.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"] }
+socket2 = "=0.6.5"
+getrandom = "=0.2.17"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

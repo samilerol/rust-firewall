@@ -1,0 +1,13 @@
+# Rust dependency checks; this is not an audit of Gradle/Android or a security proof.
+[advisories]
+unmaintained = "all"
+unsound = "all"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.8
+allow = ["Apache-2.0", "MIT", "0BSD", "Unicode-3.0", "Unlicense", "NCSA"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

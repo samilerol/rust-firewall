@@ -47,3 +47,10 @@ edns = bytearray(query)
 edns[11] = 1
 edns += bytes.fromhex('00002904d0000080000004000a0000')
 (dns_out / 'edns-query').write_bytes(edns)
+
+tcp_out = Path(__file__).parent / 'corpus' / 'tcp'
+tcp_out.mkdir(parents=True, exist_ok=True)
+(tcp_out / 'control-pattern').write_bytes(bytes(range(256)))
+(tcp_out / 'empty').write_bytes(b'')
+(tcp_out / 'fin-reset-pressure').write_bytes(bytes([255]) * 1024)
+(tcp_out / 'valid-syn').write_bytes(bytes.fromhex((fixtures / 'v4-tcp-empty.hex').read_text()))

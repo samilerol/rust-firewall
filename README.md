@@ -25,7 +25,7 @@ See [architecture](docs/ARCHITECTURE.md), [security model](docs/SECURITY_MODEL.m
 
 ## Limitations
 
-Portable UDP socket relay exists with loopback coverage; TCP forwarding, app attribution, question-based classic UDP DNS filtering exists as an opt-in relay feature; DPI, IDS and kernel adapters remain unimplemented. A minimal Android consent/service/JNI diagnostic discards all read datagrams; it is not a usable forwarding firewall. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
+Portable UDP socket relay exists with loopback coverage; experimental TCP forwarding is available as a portable library; app attribution, question-based classic UDP DNS filtering exists as an opt-in relay feature; DPI, IDS and kernel adapters remain unimplemented. A minimal Android consent/service/JNI diagnostic discards all read datagrams; it is not a usable forwarding firewall. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
 
 This public project must never receive private code from `samilerol/netscope`.
 
@@ -53,8 +53,12 @@ Use `netscope_packet::parse_checked(bytes, ChecksumPolicy::Require)` at a bounda
 - `netscope-transport`: nonblocking IPv4/IPv6 UDP relay with mandatory protection-before-connect hook, current response-policy checks, bounded socket count, MTU enforcement and network reset.
 - Conntrack uses one ordered expiry record per active flow; policy compiles priority order once while preserving original rule indices.
 
-See [engine/transport contracts](docs/ENGINE_TRANSPORT.md). APK/UI work is paused; the Android diagnostic remains drop-all and is not connected to this relay. There is no TCP forwarder yet. A successful UDP loopback test is not Android/device enforcement evidence.
+See [engine/transport contracts](docs/ENGINE_TRANSPORT.md). APK/UI work is paused; the Android diagnostic remains drop-all and is not connected to this relay. An experimental portable TCP proxy is now available; it is not integrated into the diagnostic app. A successful UDP loopback test is not Android/device enforcement evidence.
 
 ## Classic DNS/domain policy
 
 `netscope-dns` adds bounded compression/EDNS/message parsing and exact/subdomain rules. Enable it explicitly on selected UDP destination ports with `UdpRelay::set_dns_filter`; allowed names still require packet policy allow. Replies must match one pending transaction/question per flow. See [DNS scope and limits](docs/DNS_POLICY.md): this does not inspect DoH/DoT, TCP DNS, aliases or direct IP access, and is not DNSSEC validation. APK/UI remains paused.
+
+## Experimental TCP software path
+
+`netscope_transport::tcp::TcpRelay` connects raw IPv4/IPv6 TCP to caller-protected nonblocking OS streams using smoltcp. It has bounded flow/stream/packet budgets, partial-write backpressure, half-close handling and explicit clock/connect/idle limits. See [TCP contracts](docs/TCP_TRANSPORT.md). TCP DNS/encrypted-domain filtering and platform integration are not implemented. APK/UI remains paused.

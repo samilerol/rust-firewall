@@ -106,17 +106,7 @@ impl<P: SocketProtector> UdpRelay<P> {
         if metadata.protocol != Protocol::Udp {
             return Err(RelayError::UnsupportedProtocol);
         }
-        let unsupported = match metadata.destination {
-            IpAddr::V4(ip) => ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast(),
-            IpAddr::V6(ip) => {
-                ip.is_unspecified()
-                    || ip.is_multicast()
-                    || ip.is_unicast_link_local()
-                    || ip.to_ipv4_mapped().is_some()
-            }
-        } || matches!(metadata.source,IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some())
-            || metadata.source_port == 0
-            || metadata.destination_port == 0;
+        let unsupported = unsupported_endpoint(&metadata);
         if unsupported {
             return Err(RelayError::UnsupportedAddress);
         }
@@ -301,4 +291,24 @@ impl<P: SocketProtector> UdpRelay<P> {
     pub fn stats(&self) -> Stats {
         self.engine.stats()
     }
+}
+
+/// Packet-oriented TCP proxy using a bounded userspace TCP stack and protected upstream streams.
+pub mod tcp;
+
+fn unsupported_endpoint(metadata: &netscope_packet::Packet) -> bool {
+    let destination = match metadata.destination {
+        IpAddr::V4(ip) => ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast(),
+        IpAddr::V6(ip) => {
+            ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_unicast_link_local()
+                || ip.to_ipv4_mapped().is_some()
+        }
+    };
+    let source = match metadata.source {
+        IpAddr::V4(ip) => ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast(),
+        IpAddr::V6(ip) => ip.is_unspecified() || ip.is_multicast() || ip.to_ipv4_mapped().is_some(),
+    };
+    destination || source || metadata.source_port == 0 || metadata.destination_port == 0
 }

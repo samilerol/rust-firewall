@@ -43,8 +43,8 @@ jobs:
         run: |
           case '${{ matrix.check }}' in
             fmt) cargo +stable fmt --check && cargo +stable fmt --manifest-path fuzz/Cargo.toml --check ;;
-            clippy) cargo +stable clippy --workspace --all-targets -- -D warnings ;;
-            test) cargo +stable test --workspace ;;
+            clippy) cargo +stable clippy --workspace --all-targets -- -D warnings && cargo +stable clippy -p netscope-transport --features fuzzing --all-targets -- -D warnings ;;
+            test) cargo +stable test --workspace && cargo +stable test -p netscope-transport --features fuzzing tcp:: ;;
             build) cargo +stable build --workspace ;;
           esac
   msrv:
