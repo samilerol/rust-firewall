@@ -33,6 +33,11 @@ jobs:
         with:
           path: target
           key: rust-${{ runner.os }}-${{ matrix.check }}-${{ hashFiles('Cargo.lock', '**/*.rs', '**/Cargo.toml') }}
+      - name: Reproduce independent checksum fixtures
+        if: matrix.check == 'test'
+        run: |
+          python3 tools/generate_checksum_fixtures.py
+          git diff --exit-code -- crates/netscope-packet/tests/fixtures
       - name: Run check
         shell: bash
         run: |

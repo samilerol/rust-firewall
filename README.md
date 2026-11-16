@@ -25,7 +25,7 @@ See [architecture](docs/ARCHITECTURE.md), [security model](docs/SECURITY_MODEL.m
 
 ## Limitations
 
-No socket forwarding, JNI, Android UI/service, app attribution, DNS filtering, DPI, IDS, kernel adapter or packet enforcement exists. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. Checksums are not verified. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. There are no performance or device leak-test results.
+No socket forwarding, JNI, Android UI/service, app attribution, DNS filtering, DPI, IDS, kernel adapter or packet enforcement exists. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
 
 This public project must never receive private code from `samilerol/netscope`.
 
@@ -38,3 +38,7 @@ A separate [parser fuzz target](fuzz/README.md) exercises untrusted datagrams wi
 ## Performance baseline harness
 
 `tools/core-bench` is a development-only workspace binary with 31 synthetic parser/policy/flow scenarios, release-only execution and CSV output. `cargo run --release --locked -p netscope-bench -- --smoke` checks the harness quickly. See [benchmark methodology](docs/BENCHMARKS.md) for full runs, warmup/sample interpretation, CI artifacts and limitations. These are host library microbenchmarks, not Android performance measurements.
+
+## Explicit checksum validation
+
+Use `netscope_packet::parse_checked(bytes, ChecksumPolicy::Require)` at a boundary requiring complete wire checksums. It returns the packet metadata plus `TransportChecksum::Verified`, or a structural/checksum error. `ChecksumPolicy::AllowIpv4UdpOmission` permits the IPv4 UDP standard's optional zero checksum and reports `OmittedIpv4Udp`; IPv6 UDP zero is always rejected. `parse` remains metadata-only for callers that deliberately choose not to verify checksums. Neither API authenticates traffic. Checksum offload may leave partial checksums in OS buffers; determine the actual platform contract before using strict validation on a TUN path.

@@ -1,8 +1,22 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use netscope_packet::{parse, Protocol};
+use netscope_packet::{parse, parse_checked, ChecksumPolicy, Protocol, TransportChecksum};
 
 fuzz_target!(|bytes: &[u8]| {
+    for policy in [
+        ChecksumPolicy::Require,
+        ChecksumPolicy::AllowIpv4UdpOmission,
+    ] {
+        if let Ok(checked) = parse_checked(bytes, policy) {
+            assert_eq!(parse(bytes), Ok(checked.packet));
+            if checked.transport_checksum == TransportChecksum::OmittedIpv4Udp {
+                assert_eq!(policy, ChecksumPolicy::AllowIpv4UdpOmission);
+                assert!(checked.packet.source.is_ipv4());
+                assert_eq!(checked.packet.protocol, Protocol::Udp);
+                assert!(parse_checked(bytes, ChecksumPolicy::Require).is_err());
+            }
+        }
+    }
     if let Ok(packet) = parse(bytes) {
         assert_eq!(packet.length, bytes.len());
         assert_eq!(packet.source.is_ipv4(), packet.destination.is_ipv4());

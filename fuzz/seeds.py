@@ -1,4 +1,4 @@
-"""Create structural TCP/UDP seeds; checksums remain synthetic (not validated)."""
+"""Create structural seeds plus independent checksum validation fixtures."""
 from pathlib import Path
 import struct
 
@@ -26,3 +26,9 @@ for v6 in (False, True):
         else:
             packet[offset + 4:offset + 6] = struct.pack('!H', size)
         (out / f'ipv{6 if v6 else 4}-{"tcp" if tcp else "udp"}').write_bytes(packet)
+
+fixtures = Path(__file__).resolve().parents[1] / 'crates/netscope-packet/tests/fixtures'
+for path in fixtures.glob('*.hex'):
+    (out / ('checksum-' + path.stem)).write_bytes(bytes.fromhex(path.read_text()))
+for path in fixtures.glob('*.bin'):
+    (out / ('checksum-' + path.stem)).write_bytes(path.read_bytes())
