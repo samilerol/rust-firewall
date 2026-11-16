@@ -7,4 +7,6 @@ public final class NativeCore {
     public static native int inspect(byte[] packet, int length);
     /** Opt-in probe only: protection of Rust-owned sockets; never forwards traffic. */
     public static native int probeProtectedSockets(Object vpnProtectionService);
+    /** Host-testable JavaVM/GlobalRef worker probe; not live VPN forwarding. */
+    public static native int probeProtectedSocketsOnWorker(Object vpnProtectionService, boolean revokeBeforeUse);
 }
