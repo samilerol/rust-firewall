@@ -36,6 +36,22 @@ public final class NativeSocketProtectionSmoke {
         check(NativeCore.probeProtectedSockets(accepts) == 0);
         check(accepts.calls == 2 && accepts.firstFd >= 0 && accepts.secondFd >= 0);
         check(NativeCore.probeProtectedSockets(reject) == -1);
+        check(NativeCore.probeProtectedSocketsOnWorker(null, false) == -1);
+        FakeService workerApproved = new FakeService(0);
+        check(NativeCore.probeProtectedSocketsOnWorker(workerApproved, false) == 0);
+        check(workerApproved.calls == 2);
+        FakeService workerDenied = new FakeService(1);
+        check(NativeCore.probeProtectedSocketsOnWorker(workerDenied, false) == -1);
+        check(workerDenied.calls == 1);
+        FakeService workerThrows = new FakeService(2);
+        check(NativeCore.probeProtectedSocketsOnWorker(workerThrows, false) == -1);
+        check(workerThrows.calls == 1);
+        FakeService revoked = new FakeService(0);
+        check(NativeCore.probeProtectedSocketsOnWorker(revoked, true) == -1);
+        check(revoked.calls == 0);
+        FakeService secondDenied = new FakeService(3);
+        check(NativeCore.probeProtectedSocketsOnWorker(secondDenied, false) == -1);
+        check(secondDenied.calls == 2);
         System.out.println("Native socket protection JNI host smoke: PASS");
     }
 }
