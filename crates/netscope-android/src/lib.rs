@@ -89,3 +89,5 @@ mod socket_protection;
 
 #[cfg(unix)]
 mod vpn_protector;
+
+mod tun_egress_probe;
