@@ -48,15 +48,17 @@ fn probe(env: &mut JNIEnv<'_>, queue: JObject<'_>, ipv6: bool) -> jint {
         "([BI)Z",
         &[JValue::Object(&array_object), JValue::Int(bytes.len() as jint)],
     );
-    match result {
-        Ok(value) if matches!(value.z(), Ok(true)) => OK,
-        _ => {
-            if env.exception_check().unwrap_or(false) {
-                let _ = env.exception_clear();
-            }
-            FAILED
-        }
+    let accepted = match result {
+        Ok(value) => matches!(value.z(), Ok(true)),
+        Err(_) => false,
+    };
+    if accepted {
+        return OK;
     }
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    FAILED
 }
 
 /// Probe only: test a synthetic Rust-produced IP/UDP datagram entering the
