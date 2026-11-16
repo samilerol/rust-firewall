@@ -28,7 +28,10 @@ where
 
     fn apply(&self, fd: RawFd) -> io::Result<()> {
         if fd < 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid socket fd"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid socket fd",
+            ));
         }
         match (self.protect)(fd)? {
             true => Ok(()),
@@ -75,11 +78,15 @@ mod tests {
             Ok(false)
         });
         assert_eq!(
-            SocketProtector::protect(&protection, &udp).unwrap_err().kind(),
+            SocketProtector::protect(&protection, &udp)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::PermissionDenied
         );
         assert_eq!(
-            TcpSocketProtector::protect(&protection, &tcp).unwrap_err().kind(),
+            TcpSocketProtector::protect(&protection, &tcp)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::PermissionDenied
         );
         assert_eq!(calls.get(), 2);
@@ -98,7 +105,9 @@ mod tests {
             io::ErrorKind::Other
         );
         assert_eq!(
-            TcpSocketProtector::protect(&failure, &tcp).unwrap_err().kind(),
+            TcpSocketProtector::protect(&failure, &tcp)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::Other
         );
 
