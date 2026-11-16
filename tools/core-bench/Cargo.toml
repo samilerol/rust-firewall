@@ -13,3 +13,4 @@ workspace = true
 netscope-packet = { path = "../../crates/netscope-packet" }
 netscope-policy = { path = "../../crates/netscope-policy" }
 netscope-conntrack = { path = "../../crates/netscope-conntrack" }
+netscope-dns = { path = "../../crates/netscope-dns" }

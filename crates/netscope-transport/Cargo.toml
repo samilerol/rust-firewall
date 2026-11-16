@@ -14,3 +14,4 @@ netscope-packet = { path = "../netscope-packet" }
 netscope-policy = { path = "../netscope-policy" }
 netscope-conntrack = { path = "../netscope-conntrack" }
 netscope-engine = { path = "../netscope-engine" }
+netscope-dns = { path = "../netscope-dns" }

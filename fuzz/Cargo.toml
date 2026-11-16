@@ -12,6 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "=0.4.13"
 netscope-packet = { path = "../crates/netscope-packet" }
 netscope-engine = { path = "../crates/netscope-engine" }
+netscope-dns = { path = "../crates/netscope-dns" }
 netscope-policy = { path = "../crates/netscope-policy" }
 
 [[bin]]
@@ -24,6 +25,13 @@ bench = false
 [[bin]]
 name = "engine"
 path = "fuzz_targets/engine.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns"
+path = "fuzz_targets/dns.rs"
 test = false
 doc = false
 bench = false

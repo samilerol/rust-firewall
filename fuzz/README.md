@@ -22,3 +22,7 @@ Dependency metadata was reviewed: fuzz dependencies declare MIT/Apache-2.0 alter
 ## Stateful portable engine target
 
 `cargo +nightly fuzz run engine -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=1024 -seed=1` varies checked admissions, monotonic/reversed clocks, valid/invalid policy updates and resets under an eight-flow cap. It asserts bounded state and no acceptance under default deny. Both this target and the serializer/parser target are pure in-memory code and never open sockets. The CI job runs both targets sequentially after one toolchain/CLI install; each target has a 30-second budget. Parser fuzzing also checks generated UDP datagrams against strict checksum parsing.
+
+## DNS target
+
+`cargo +nightly fuzz run dns -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=4097 -seed=1` exercises query/response envelopes and multiple compression offsets, checks normalization idempotence and default-deny policy. Four generated seeds cover query, compressed answer, EDNS and cycle. CI now runs three pure targets sequentially (packet, engine, dns), each with a 30-second budget after a shared tool install. No target sends network traffic.

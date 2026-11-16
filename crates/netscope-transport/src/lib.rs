@@ -1,10 +1,11 @@
 //! Bounded nonblocking UDP relay. No TCP stack or Android socket protection implementation.
 use netscope_conntrack::FlowId;
+use netscope_dns::{parse_query, parse_response, DomainPolicy, Message};
 use netscope_engine::{Config, DropReason, Engine, Outcome, Stats};
 use netscope_packet::{parse, udp, Protocol};
 use netscope_policy::{Action, Policy, PolicyError, Rule};
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
 };
@@ -26,11 +27,20 @@ pub enum RelayError {
     Dropped(DropReason),
     Io(io::Error),
     Encode(udp::EncodeError),
+    Dns(DnsError),
 }
 impl From<io::Error> for RelayError {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
     }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DnsError {
+    Malformed(netscope_dns::ParseError),
+    DomainDenied { rule_index: Option<usize> },
+    Busy,
+    Unsolicited,
+    Mismatched,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Sent {
@@ -43,6 +53,9 @@ pub struct UdpRelay<P> {
     protector: P,
     mtu: usize,
     receive_buffer: Box<[u8]>,
+    dns_policy: Option<DomainPolicy>,
+    dns_ports: BTreeSet<u16>,
+    dns_pending: HashMap<FlowId, Message>,
 }
 impl<P: SocketProtector> UdpRelay<P> {
     pub fn new(
@@ -61,19 +74,25 @@ impl<P: SocketProtector> UdpRelay<P> {
             protector,
             mtu,
             receive_buffer: vec![0; 65528].into_boxed_slice(),
+            dns_policy: None,
+            dns_ports: BTreeSet::new(),
+            dns_pending: HashMap::new(),
         })
     }
     /// Call periodically when idle as well as on send/receive to release expired sockets.
     pub fn expire(&mut self, now: u64) -> Result<usize, RelayError> {
         let sockets = &mut self.sockets;
+        let pending = &mut self.dns_pending;
         self.engine
             .expire_with(now, |id| {
                 sockets.remove(&id);
+                pending.remove(&id);
             })
             .map_err(|_| RelayError::Dropped(DropReason::ClockReversed))
     }
     fn forget(&mut self, id: &FlowId) {
         self.sockets.remove(id);
+        self.dns_pending.remove(id);
         self.engine.forget_flow(id);
     }
     /// Validate/admit a full IP/UDP datagram, then send its payload using one protected socket per flow.
@@ -101,6 +120,32 @@ impl<P: SocketProtector> UdpRelay<P> {
         if unsupported {
             return Err(RelayError::UnsupportedAddress);
         }
+        let candidate_id = FlowId::from(&metadata);
+        let dns_query = if let Some(policy) = self
+            .dns_policy
+            .as_ref()
+            .filter(|_| self.dns_ports.contains(&metadata.destination_port))
+        {
+            let offset = if metadata.source.is_ipv4() { 28 } else { 48 };
+            let query = parse_query(&bytes[offset..])
+                .map_err(|e| RelayError::Dns(DnsError::Malformed(e)))?;
+            let decision = policy.decide(&query.question.name);
+            if decision.action == Action::Deny {
+                return Err(RelayError::Dns(DnsError::DomainDenied {
+                    rule_index: decision.rule_index,
+                }));
+            }
+            if self
+                .dns_pending
+                .get(&candidate_id)
+                .is_some_and(|pending| pending != &query)
+            {
+                return Err(RelayError::Dns(DnsError::Busy));
+            }
+            Some(query)
+        } else {
+            None
+        };
         let packet = match self.engine.process(bytes, now) {
             Outcome::Accepted { packet, .. } => packet,
             Outcome::Dropped(reason) => return Err(RelayError::Dropped(reason)),
@@ -131,10 +176,15 @@ impl<P: SocketProtector> UdpRelay<P> {
         let offset = if packet.source.is_ipv4() { 28 } else { 48 };
         let result = self.sockets[&id].send(&bytes[offset..]);
         match result {
-            Ok(count) if count == bytes.len() - offset => Ok(Sent {
-                flow: id,
-                payload_bytes: count,
-            }),
+            Ok(count) if count == bytes.len() - offset => {
+                if let Some(query) = dns_query {
+                    self.dns_pending.insert(id, query);
+                }
+                Ok(Sent {
+                    flow: id,
+                    payload_bytes: count,
+                })
+            }
             Ok(_) => {
                 self.forget(&id);
                 Err(RelayError::Io(io::Error::new(
@@ -168,6 +218,31 @@ impl<P: SocketProtector> UdpRelay<P> {
             self.forget(&id);
             return Err(RelayError::MtuExceeded);
         }
+        if let Some(policy) = self
+            .dns_policy
+            .as_ref()
+            .filter(|_| self.dns_ports.contains(&id.destination_port))
+        {
+            let checked = (|| -> Result<(), DnsError> {
+                let expected = self.dns_pending.get(&id).ok_or(DnsError::Unsolicited)?;
+                let response =
+                    parse_response(&self.receive_buffer[..count]).map_err(DnsError::Malformed)?;
+                if response.id != expected.id || response.question != expected.question {
+                    return Err(DnsError::Mismatched);
+                }
+                let decision = policy.decide(&response.question.name);
+                if decision.action == Action::Deny {
+                    return Err(DnsError::DomainDenied {
+                        rule_index: decision.rule_index,
+                    });
+                }
+                Ok(())
+            })();
+            if let Err(error) = checked {
+                self.forget(&id);
+                return Err(RelayError::Dns(error));
+            }
+        }
         let response = udp::encode(
             SocketAddr::new(id.destination, id.destination_port),
             SocketAddr::new(id.source, id.source_port),
@@ -175,7 +250,10 @@ impl<P: SocketProtector> UdpRelay<P> {
         )
         .map_err(RelayError::Encode)?;
         match self.engine.authorize_response(&response, &id, now) {
-            Outcome::Accepted { .. } => Ok(response),
+            Outcome::Accepted { .. } => {
+                self.dns_pending.remove(&id);
+                Ok(response)
+            }
             Outcome::Dropped(reason) => {
                 self.forget(&id);
                 Err(RelayError::Dropped(reason))
@@ -191,7 +269,31 @@ impl<P: SocketProtector> UdpRelay<P> {
     /// Caller must invoke on upstream-network change. No OS network observer is implemented here.
     pub fn reset_network(&mut self) {
         self.sockets.clear();
+        self.dns_pending.clear();
         self.engine.reset_network();
+    }
+    /// Enable question-based filtering only on the explicit destination ports. No global DNS guarantee.
+    /// One pending question per flow; identical retransmissions are allowed. A valid change revokes mappings.
+    pub fn set_dns_filter(
+        &mut self,
+        policy: Option<DomainPolicy>,
+        ports: Vec<u16>,
+    ) -> Result<(), RelayError> {
+        if ports.len() > 32 || ports.contains(&0) || policy.is_some() == ports.is_empty() {
+            return Err(RelayError::Config);
+        }
+        let count = ports.len();
+        let ports: BTreeSet<_> = ports.into_iter().collect();
+        if ports.len() != count {
+            return Err(RelayError::Config);
+        }
+        self.dns_policy = policy;
+        self.dns_ports = ports;
+        self.reset_network();
+        Ok(())
+    }
+    pub fn pending_dns_count(&self) -> usize {
+        self.dns_pending.len()
     }
     pub fn flow_count(&self) -> usize {
         self.sockets.len()

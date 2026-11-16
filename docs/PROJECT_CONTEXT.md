@@ -13,3 +13,5 @@ Milestone 1 implements packet metadata, policy and bounded flow observations onl
 Current platform milestone adds a deliberately traffic-blocking Android diagnostic VPN and JNI bridge, documented in ANDROID_INTEGRATION.md. This is not forwarding or proven Android protection; device tests and transport selection are still required.
 
 Owner direction: pause APK/UI work and prioritize the portable software. Engine/UDP relay, optimized bounded expiry and compiled policy precedence are documented in ENGINE_TRANSPORT.md; the Android diagnostic is not wired to the new relay. TCP transport is still pending.
+
+Classic UDP DNS parsing and opt-in question-domain filtering now extend the portable relay; limits/correlation/scope are in DNS_POLICY.md. No encrypted/TCP DNS, alias-chain enforcement or DNSSEC validation exists.
