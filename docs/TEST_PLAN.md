@@ -1,0 +1,26 @@
+# Test plan and milestone 1 evidence
+
+## Executed locally
+
+Stable Rust 1.100.0, Linux x86_64:
+
+- `cargo fmt --check`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace`: 10 tests passed, no failures; three empty doctest suites.
+- `cargo build --workspace`: passed.
+
+`cargo +1.85.0 test --workspace --locked` verifies the declared minimum toolchain separately. GitHub CI has independent stable fmt/clippy/test/build jobs and an MSRV job. Local results do not establish remote CI status; consult the actual GitHub Actions run.
+
+## Reproducible coverage
+
+Packet tests cover IPv4/IPv6 crossed with TCP/UDP, both addresses and ports, all truncated prefixes, inconsistent datagram/UDP/TCP lengths, IPv4 fragments/options, extension-header rejection and 16,384 deterministic arbitrary inputs without panic. Fixtures test header structure; checksum fields are synthetic and are not validated. This is not a cargo-fuzz campaign.
+
+Policy tests cover IPv4 /0, /24, /32 and IPv6 /0, /64, /128, host bits, family mismatch, invalid prefixes, all five filter fields, overlapping priority conflicts, equal-priority input order and default deny. Integration tests parse UDP, allow port 53, deny port 443 and track only the permitted flow.
+
+Flow tests cover refresh, creation/last-seen timestamps, exact timeout boundary, capacity rejection, entry reuse after expiry, zero limits, reverse directions, TCP/UDP separation, reversed clocks and u64 maximum time without overflow.
+
+## Pending validation
+
+Dedicated coverage reporting, true property-based generation, sustained parser fuzzing, performance benchmarks, cross-target builds and dependency audit automation are future work. No third-party runtime packages are present; review all future dependencies for advisories and license compatibility.
+
+No Android device, VPN, leak, forwarding, battery, memory or performance comparison test has been run. Future physical-device matrix must include IPv4/IPv6/DNS leaks, VPN loss, always-on/lockdown, Wi-Fi/cellular switching, app identity/unknown identity, TCP/UDP reliability, long-running memory/stability and battery use. Record device/OS, commit, settings, traffic generator and observations. Never convert a planned check into a passing result.

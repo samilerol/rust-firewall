@@ -1,0 +1,11 @@
+# Architecture
+
+Milestone 1 has three crates. Packet parsing returns owned fixed-size metadata without allocating; policy consumes that metadata and returns an action plus original matched-rule index; conntrack optionally records a directional flow after policy allows it. Each packet must be reevaluated against the current policy. Reverse traffic needs an explicit policy; tracking does not grant access.
+
+Policy scans immutable input rules in O(R); ties use input index. CIDR host bits are ignored by comparison, and address families never cross-match. Inverted port ranges match nothing. Configuration loading and rule count limits must be added before accepting external policy files.
+
+Tracking uses a HashMap, limited by configured maximum entries; Rust allocator overhead means this is an entry bound, not a byte bound. Every observation expires old entries in O(F), then updates or inserts. Caller-supplied ticks must be monotonic, in one consistent unit. Capacity/zero-timeout errors require caller handling, never implicit allow. Queries reflect the last expire/observe call; callers must expire before querying current liveness. This is not TCP validation, NAT, stream reassembly or UDP forwarding.
+
+Future: minimal Android VPNService and protected socket bridge -> Rust TUN parser -> policy -> explicit transport -> OS sockets. Socket protection must precede forwarding to avoid VPN loops. The UI and Android APIs stay outside these crates. DNS, DPI, threat, IDS, platform, Android, Linux and UI crates are future targets, not existing capabilities.
+
+Rootless mode is constrained by Android's VPN lifecycle and competing VPN apps. Rooted mode is a separate future adapter evaluating nftables/iptables/netfilter/eBPF against actual kernel support, with privilege checks, atomic apply, rollback and safe restoration. No kernel changes occur in milestone 1.
