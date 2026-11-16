@@ -44,6 +44,12 @@ jobs:
           mkdir -p /tmp/netscope-tun-queue
           javac --release 17 -d /tmp/netscope-tun-queue android/app/src/main/java/org/netscope/ngfw/TunPacketWriter.java android/app/src/main/java/org/netscope/ngfw/TunEgressQueue.java tools/TunEgressQueueSmoke.java
           java -cp /tmp/netscope-tun-queue org.netscope.ngfw.TunEgressQueueSmoke
+      - name: Synthetic Rust to bounded Java TUN queue JNI smoke
+        run: |
+          cargo +stable build --locked -p netscope-android
+          mkdir -p /tmp/netscope-egress-jni
+          javac --release 17 -d /tmp/netscope-egress-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java android/app/src/main/java/org/netscope/ngfw/TunPacketWriter.java android/app/src/main/java/org/netscope/ngfw/TunEgressQueue.java tools/TunEgressJniSmoke.java
+          java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-egress-jni org.netscope.ngfw.TunEgressJniSmoke
       - name: Real JVM JNI boundary checks
         run: |
           cargo +stable build --locked -p netscope-android
