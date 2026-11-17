@@ -101,7 +101,10 @@ fn probe(
                     &queue,
                     "offer",
                     "([BI)Z",
-                    &[JValue::Object(&array_object), JValue::Int(response.len() as jint)],
+                    &[
+                        JValue::Object(&array_object),
+                        JValue::Int(response.len() as jint),
+                    ],
                 );
                 match result {
                     Ok(value) if value.z() == Ok(true) => return OK,
