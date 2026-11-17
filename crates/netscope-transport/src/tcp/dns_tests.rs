@@ -203,6 +203,11 @@ fn ipv4_ipv6_fragmented_pipeline_out_of_order_and_large_frames() {
         }
         assert!(h.upstream_bytes().is_empty(), "unvalidated prefix leaked");
         h.send(&requests[1..]);
+        // FIN follows the complete pipeline; requests must drain before upstream write shutdown.
+        h.client
+            .sockets
+            .get_mut::<StackSocket>(h.client.handle)
+            .close();
         h.take_queries(&requests);
         assert_eq!(h.relay.pending_dns_count(), 2);
         let first = framed(&answer(b));
@@ -220,10 +225,6 @@ fn ipv4_ipv6_fragmented_pipeline_out_of_order_and_large_frames() {
         h.until(|h, _| h.received.len() == first.len() + second.len());
         assert_eq!(&h.received[first.len()..], second);
         assert_eq!(h.relay.pending_dns_count(), 0);
-        h.client
-            .sockets
-            .get_mut::<StackSocket>(h.client.handle)
-            .close();
         h.server.shutdown(Shutdown::Write).unwrap();
         h.until(|h, _| h.relay.flow_count() == 0);
     }
