@@ -95,3 +95,6 @@ mod udp_relay_probe;
 
 #[cfg(not(target_os = "android"))]
 mod tun_egress_probe;
+
+/// Bounded default-deny UDP session kernel; not connected to the diagnostic VPN.
+mod udp_session;
