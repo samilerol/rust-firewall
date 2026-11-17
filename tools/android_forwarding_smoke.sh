@@ -20,10 +20,10 @@ for _ in {1..120}; do
         cat /tmp/netscope-emulator.log
         exit 1
     fi
-    if "$adb" get-state 2>/dev/null | rg -qx device; then break; fi
+    if "$adb" get-state 2>/dev/null | grep -qx device; then break; fi
     sleep 2
 done
-"$adb" get-state | rg -qx device
+"$adb" get-state | grep -qx device
 for _ in {1..120}; do
     if [[ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]; then break; fi
     sleep 2
@@ -53,4 +53,4 @@ PY
 echo_pid=$!
 trap 'kill "$emulator_pid" 2>/dev/null || true; sudo kill "$echo_pid" 2>/dev/null || true' EXIT
 timeout 90 "$adb" shell am instrument -w org.netscope.ngfw.test/org.netscope.ngfw.ForwardingSmoke | tee /tmp/netscope-forwarding-emulator.log
-rg -q 'NETSCOPE_FORWARDING_SMOKE_PASS' /tmp/netscope-forwarding-emulator.log
+grep -q 'NETSCOPE_FORWARDING_SMOKE_PASS' /tmp/netscope-forwarding-emulator.log
