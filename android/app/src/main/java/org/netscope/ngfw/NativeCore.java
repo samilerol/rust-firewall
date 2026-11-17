@@ -5,6 +5,10 @@ public final class NativeCore {
     static { System.loadLibrary("netscope_android"); }
     private NativeCore() {}
     public static native int inspect(byte[] packet, int length);
+    /** Dormant default-deny UDP session; no packet forwarding API. Zero is failure. */
+    public static native long startUdpSession(Object vpnService);
+    public static native int stopUdpSession(long sessionId);
+    public static native int resetUdpSessionNetwork(long sessionId);
     /** Opt-in probe only: protection of Rust-owned sockets; never forwards traffic. */
     public static native int probeProtectedSockets(Object vpnProtectionService);
     /** Host-testable JavaVM/GlobalRef worker probe; not live VPN forwarding. */
