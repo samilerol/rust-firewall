@@ -25,9 +25,9 @@ public final class UdpRelayJniSmoke {
         }
     }
 
-    private static int roundtrip(FakeVpnProtector protector, TunEgressQueue queue, boolean allowInbound)
+    private static int roundtrip(FakeVpnProtector protector, TunEgressQueue queue, boolean allowInbound, boolean ipv6)
             throws Exception {
-        try (DatagramSocket server = new DatagramSocket(0, InetAddress.getByName("127.0.0.1"))) {
+        try (DatagramSocket server = new DatagramSocket(0, InetAddress.getByName(ipv6 ? "::1" : "127.0.0.1"))) {
             server.setSoTimeout(2500);
             AtomicReference<Throwable> workerFailure = new AtomicReference<>();
             Thread echo = new Thread(() -> {
@@ -47,7 +47,7 @@ public final class UdpRelayJniSmoke {
             });
             echo.start();
             int result = NativeCore.probeUdpRelayLoopback(
-                protector, queue, server.getLocalPort(), allowInbound);
+                protector, queue, server.getLocalPort(), allowInbound, ipv6);
             echo.join(3000);
             check(!echo.isAlive());
             check(workerFailure.get() == null);
@@ -60,7 +60,7 @@ public final class UdpRelayJniSmoke {
         TunEgressQueue allowed = new TunEgressQueue(
             new TunPacketWriter(acceptedBytes, 1280), 1280, 2, 1280);
         FakeVpnProtector accept = new FakeVpnProtector(0);
-        check(roundtrip(accept, allowed, true) == 0);
+        check(roundtrip(accept, allowed, true, false) == 0);
         check(accept.calls == 1);
         check(allowed.queuedPackets() == 1);
         check(allowed.drain(1) == 1);
@@ -73,25 +73,49 @@ public final class UdpRelayJniSmoke {
         check(reply.equals("reply-from-loopback"));
         allowed.close();
 
+        // IPv6 loopback uses a separately tracked IPv6 socket and strict reverse policy.
+        ByteArrayOutputStream v6bytes = new ByteArrayOutputStream();
+        TunEgressQueue v6queue = new TunEgressQueue(
+            new TunPacketWriter(v6bytes, 1280), 1280, 2, 1280);
+        FakeVpnProtector v6protector = new FakeVpnProtector(0);
+        check(roundtrip(v6protector, v6queue, true, true) == 0);
+        check(v6protector.calls == 1 && v6queue.queuedPackets() == 1);
+        check(v6queue.drain(1) == 1);
+        byte[] v6response = v6bytes.toByteArray();
+        check(v6response.length > 48 && (v6response[0] & 0xf0) == 0x60);
+        int v6payload = ((v6response[4] & 0xff) << 8) | (v6response[5] & 0xff);
+        check(v6response.length == 40 + v6payload);
+        check((v6response[6] & 0xff) == 17);
+        check(new String(v6response, 48, v6response.length - 48,
+            StandardCharsets.US_ASCII).equals("reply-from-loopback"));
+        v6queue.close();
+
+        ByteArrayOutputStream v6deniedSink = new ByteArrayOutputStream();
+        TunEgressQueue v6denied = new TunEgressQueue(
+            new TunPacketWriter(v6deniedSink, 1280), 1280, 2, 1280);
+        check(roundtrip(new FakeVpnProtector(0), v6denied, false, true) == -1);
+        check(v6denied.queuedPackets() == 0 && v6deniedSink.size() == 0);
+        v6denied.close();
+
         ByteArrayOutputStream blockedBytes = new ByteArrayOutputStream();
         TunEgressQueue denied = new TunEgressQueue(
             new TunPacketWriter(blockedBytes, 1280),1280,2,1280);
-        check(roundtrip(new FakeVpnProtector(0), denied, false) == -1);
+        check(roundtrip(new FakeVpnProtector(0), denied, false, false) == -1);
         check(denied.queuedPackets() == 0 && blockedBytes.size() == 0);
         denied.close();
 
         TunEgressQueue refused = new TunEgressQueue(
             new TunPacketWriter(new ByteArrayOutputStream(),1280),1280,1,1280);
         FakeVpnProtector reject = new FakeVpnProtector(1);
-        check(NativeCore.probeUdpRelayLoopback(reject, refused, 12345, true) == -1);
+        check(NativeCore.probeUdpRelayLoopback(reject, refused, 12345, true, false) == -1);
         check(reject.calls == 1 && refused.queuedPackets() == 0);
         FakeVpnProtector throwsProtect = new FakeVpnProtector(2);
-        check(NativeCore.probeUdpRelayLoopback(throwsProtect, refused, 12345, true) == -1);
+        check(NativeCore.probeUdpRelayLoopback(throwsProtect, refused, 12345, true, false) == -1);
         check(throwsProtect.calls == 1 && refused.queuedPackets() == 0);
-        check(NativeCore.probeUdpRelayLoopback(null, refused, 12345, true) == -1);
-        check(NativeCore.probeUdpRelayLoopback(new FakeVpnProtector(0), null, 12345, true) == -1);
-        check(NativeCore.probeUdpRelayLoopback(new FakeVpnProtector(0), refused, 0, true) == -1);
-        check(NativeCore.probeUdpRelayLoopback(new FakeVpnProtector(0), refused, 65536, true) == -1);
+        check(NativeCore.probeUdpRelayLoopback(null, refused, 12345, true, false) == -1);
+        check(NativeCore.probeUdpRelayLoopback(new FakeVpnProtector(0), null, 12345, true, false) == -1);
+        check(NativeCore.probeUdpRelayLoopback(new FakeVpnProtector(0), refused, 0, true, false) == -1);
+        check(NativeCore.probeUdpRelayLoopback(new FakeVpnProtector(0), refused, 65536, true, false) == -1);
         refused.close();
 
         System.out.println("Native Rust UDP loopback relay / JNI / Java TUN queue smoke: PASS");
