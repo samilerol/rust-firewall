@@ -74,6 +74,8 @@ impl TcpSocketProtector for AndroidVpnProtector {
     }
 }
 
+// Host-side JVM lifecycle test only; excluded from Android release binaries.
+#[cfg(not(target_os = "android"))]
 #[allow(unsafe_code)]
 #[no_mangle]
 pub extern "system" fn Java_org_netscope_ngfw_NativeCore_probeProtectedSocketsOnWorker(
