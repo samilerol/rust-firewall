@@ -34,6 +34,8 @@ public final class ForwardingSmoke extends Instrumentation {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             Activity screen = activity;
             if (VpnService.prepare(screen) != null) throw new AssertionError("VPN consent unavailable");
+            phase = "voice command mapping and report totals";
+            verifyVoiceCommandsAndReport();
             phase = "direct baseline";
             requireEcho(8080);
             phase = "direct DNS fixture";
@@ -63,6 +65,8 @@ public final class ForwardingSmoke extends Instrumentation {
             }
             phase = "application attribution and live Apps screen";
             requireObservedApp(screen);
+            phase = "live session traffic report";
+            requireReport(screen);
             phase = "restoration after Stop";
             click(screen, R.string.vpn_disconnect);
             awaitEcho(8080, null);
@@ -170,6 +174,41 @@ public final class ForwardingSmoke extends Instrumentation {
 
     private static void requireEcho(int port) throws IOException {
         awaitEcho(port, null);
+    }
+
+    private static void verifyVoiceCommandsAndReport() {
+        if (VoiceCommand.parse(" Trafik RAPORU! ") != VoiceCommand.REPORT
+            || VoiceCommand.parse("BAĞLANTIYI KES") != VoiceCommand.DISCONNECT
+            || VoiceCommand.parse("VPN status") != VoiceCommand.STATUS
+            || VoiceCommand.parse("don't disconnect") != VoiceCommand.UNKNOWN
+            || VoiceCommand.parse("connect and disconnect") != VoiceCommand.UNKNOWN) {
+            throw new AssertionError("Unexpected voice command mapping");
+        }
+        TrafficReport report = TrafficReport.summarize(java.util.Arrays.asList(
+            new TrafficObservations.Entry(10001, 100, 4, 2),
+            new TrafficObservations.Entry(-1, 20, 1, 0)));
+        if (!report.equals(new TrafficReport(120, 5, 2, 1, 1))) {
+            throw new AssertionError("Traffic report totals are incorrect");
+        }
+    }
+
+    private void requireReport(Activity screen) {
+        if (TrafficReport.summarize(DiagnosticVpnService.trafficSnapshot()).blocked() == 0) {
+            throw new AssertionError("Live report did not count profile blocks");
+        }
+        runOnMainSync(() -> screen.findViewById(R.id.traffic_report_action).performClick());
+        var ui = getUiAutomation();
+        long deadline = SystemClock.elapsedRealtime() + 5000;
+        while (true) {
+            var root = ui.getRootInActiveWindow();
+            if (root != null && !root.findAccessibilityNodeInfosByText("Blocked by the profile:").isEmpty()) {
+                ui.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK);
+                waitForIdleSync();
+                return;
+            }
+            if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("Live report did not appear");
+            SystemClock.sleep(100);
+        }
     }
 
     private void requireObservedApp(Activity screen) throws IOException {

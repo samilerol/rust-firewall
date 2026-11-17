@@ -51,4 +51,19 @@
     <string name="traffic_uid">App UID %1$d</string>
     <string name="traffic_shared_uid">Shared app UID %1$d</string>
     <string name="traffic_counts">%1$s · %2$d packets · %3$d profile blocks</string>
+
+    <item name="traffic_report_action" type="id" />
+    <string name="report_title">Traffic report</string>
+    <string name="report_empty">No outbound traffic has been observed in this forwarding session.</string>
+    <string name="report_totals">Observed outbound data: %1$s\nPackets: %2$d\nBlocked by the profile: %3$d\nIdentified UIDs: %4$d\nPackets with unknown owner: %5$d</string>
+    <string name="report_scope">This report covers checked TCP and UDP packets routed to NetScope during this VPN session. It does not cover modem signalling or traffic outside the VPN.</string>
+    <string name="voice_title">Voice command</string>
+    <string name="voice_listening">Listening…</string>
+    <string name="voice_status">VPN status</string>
+    <string name="voice_unavailable">On-device voice recognition is unavailable on this device.</string>
+    <string name="voice_failure">Could not recognize speech on this device. Check the offline language or use touch controls.</string>
+    <string name="voice_permission">Microphone permission is needed for voice commands.</string>
+    <string name="voice_help">Try: traffic report, apps, VPN status, connect, or disconnect.</string>
+    <string name="voice_confirm">Confirm the requested VPN change.</string>
+    <string name="voice_no_change">This command cannot change the current VPN state.</string>
 </resources>

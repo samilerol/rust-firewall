@@ -26,6 +26,7 @@ import android.widget.TextView;
 public final class MainActivity extends Activity {
     private static final int NOTIFICATIONS = 2;
     private static final int CONSENT = 3;
+    private static final int MICROPHONE = 5;
     private static final int DIAGNOSTIC_CONSENT = 4;
     static final int BACKGROUND = 0xff0c1420;
     static final int SURFACE = 0xff121e2c;
@@ -36,6 +37,8 @@ public final class MainActivity extends Activity {
     private static final int AMBER = 0xffffc480;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final OnDeviceVoice voice = new OnDeviceVoice();
+    private Button voiceAction;
     private TextView stateTitle;
     private TextView stateDetail;
     private View indicator;
@@ -71,17 +74,12 @@ public final class MainActivity extends Activity {
         styleButton(apps, SURFACE, TEXT, BORDER);
         apps.setOnClickListener(view -> startActivity(new Intent(this, TrafficActivity.class)));
         add(body, apps, 12);
+        addTools(body);
         addProfile(body);
         setContentView(scroll);
         action.setOnClickListener(view -> {
-            var status = DiagnosticVpnService.status();
-            if (status == DiagnosticVpnService.Status.FORWARDING
-                || status == DiagnosticVpnService.Status.DIAGNOSTIC) {
-                startService(new Intent(this, DiagnosticVpnService.class).setAction(DiagnosticVpnService.STOP));
-                action.setEnabled(false);
-            } else {
-                requestVpn(CONSENT);
-            }
+            if (vpnActive()) disconnect();
+            else requestVpn(CONSENT);
         });
         diagnostics.setOnClickListener(view -> new AlertDialog.Builder(this)
             .setTitle(R.string.diagnostic_title)
@@ -92,6 +90,112 @@ public final class MainActivity extends Activity {
         try { nativeReady = NativeCore.inspect(new byte[0], 0) == -1; }
         catch (LinkageError error) { nativeReady = false; }
         showStatus();
+    }
+
+    private void addTools(LinearLayout body) {
+        LinearLayout tools = row();
+        Button report = button();
+        report.setId(R.id.traffic_report_action);
+        report.setText(R.string.report_title);
+        styleButton(report, SURFACE, TEXT, BORDER);
+        report.setOnClickListener(view -> showTrafficReport());
+        tools.addView(report, new LinearLayout.LayoutParams(0, -2, 1));
+
+        voiceAction = button();
+        voiceAction.setText(R.string.voice_title);
+        styleButton(voiceAction, SURFACE, TEXT, BORDER);
+        voiceAction.setOnClickListener(view -> requestVoice());
+        var size = new LinearLayout.LayoutParams(0, -2, 1);
+        size.setMarginStart(dp(8));
+        tools.addView(voiceAction, size);
+        add(body, tools, 8);
+    }
+
+    private void showTrafficReport() {
+        var report = TrafficReport.summarize(DiagnosticVpnService.trafficSnapshot());
+        String summary = report.packets() == 0 ? getString(R.string.report_empty)
+            : getString(R.string.report_totals,
+                android.text.format.Formatter.formatShortFileSize(this, report.bytes()),
+                report.packets(), report.blocked(), report.knownOwners(), report.unknownPackets());
+        new AlertDialog.Builder(this).setTitle(R.string.report_title)
+            .setMessage(summary + "\n\n" + getString(R.string.report_scope))
+            .setPositiveButton(android.R.string.ok, null).show();
+    }
+
+    private boolean vpnActive() {
+        var status = DiagnosticVpnService.status();
+        return status == DiagnosticVpnService.Status.FORWARDING
+            || status == DiagnosticVpnService.Status.DIAGNOSTIC;
+    }
+
+    private void disconnect() {
+        startService(new Intent(this, DiagnosticVpnService.class).setAction(DiagnosticVpnService.STOP));
+        action.setEnabled(false);
+    }
+
+    private void requestVoice() {
+        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_MICROPHONE)
+            || !OnDeviceVoice.available(this)) {
+            voiceNotice(R.string.voice_unavailable);
+        } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MICROPHONE);
+        } else {
+            listen();
+        }
+    }
+
+    private void listen() {
+        voiceAction.setEnabled(false);
+        voiceAction.setText(R.string.voice_listening);
+        boolean started = voice.start(this, getResources().getConfiguration().getLocales().get(0),
+            command -> {
+                resetVoiceButton();
+                handleVoice(command);
+            }, () -> {
+                resetVoiceButton();
+                voiceNotice(R.string.voice_failure);
+            });
+        if (!started) {
+            resetVoiceButton();
+            voiceNotice(R.string.voice_unavailable);
+        }
+    }
+
+    private void resetVoiceButton() {
+        voiceAction.setText(R.string.voice_title);
+        voiceAction.setEnabled(true);
+    }
+
+    private void voiceNotice(int message) {
+        android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show();
+    }
+
+    private void handleVoice(VoiceCommand command) {
+        switch (command) {
+            case REPORT -> showTrafficReport();
+            case APPS -> startActivity(new Intent(this, TrafficActivity.class));
+            case STATUS -> new AlertDialog.Builder(this).setTitle(R.string.voice_status)
+                .setMessage(stateTitle.getText()).setPositiveButton(android.R.string.ok, null).show();
+            case CONNECT, DISCONNECT -> {
+                boolean connecting = command == VoiceCommand.CONNECT;
+                var current = DiagnosticVpnService.status();
+                if (!action.isEnabled() || connecting == vpnActive()
+                    || current == DiagnosticVpnService.Status.STARTING
+                    || current == DiagnosticVpnService.Status.STOPPING) {
+                    voiceNotice(R.string.voice_no_change);
+                    return;
+                }
+                int title = connecting ? R.string.vpn_connect : R.string.vpn_disconnect;
+                new AlertDialog.Builder(this).setTitle(title).setMessage(R.string.voice_confirm)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(title, (dialog, which) -> {
+                        if (DiagnosticVpnService.status() != current || !action.isEnabled()) return;
+                        if (connecting) requestVpn(CONSENT);
+                        else disconnect();
+                    }).show();
+            }
+            case UNKNOWN -> voiceNotice(R.string.voice_help);
+        }
     }
 
     private void addHeader(LinearLayout body) {
@@ -249,6 +353,11 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
+        if (request == MICROPHONE) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) listen();
+            else voiceNotice(R.string.voice_permission);
+            return;
+        }
         if (request != NOTIFICATIONS) return;
         int mode = notificationMode;
         notificationMode = 0;
@@ -275,6 +384,12 @@ public final class MainActivity extends Activity {
     @Override protected void onStart() {
         super.onStart();
         handler.post(refresh);
+    }
+
+    @Override protected void onPause() {
+        voice.stop();
+        resetVoiceButton();
+        super.onPause();
     }
 
     @Override protected void onStop() {

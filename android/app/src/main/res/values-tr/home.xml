@@ -40,4 +40,18 @@
     <string name="traffic_uid">Uygulama UID %1$d</string>
     <string name="traffic_shared_uid">Ortak uygulama UID %1$d</string>
     <string name="traffic_counts">%1$s · %2$d paket · profilin engellediği %3$d</string>
+
+    <string name="report_title">Trafik raporu</string>
+    <string name="report_empty">Bu aktarım oturumunda henüz giden trafik görülmedi.</string>
+    <string name="report_totals">Görülen giden veri: %1$s\nPaket: %2$d\nProfilin engellediği: %3$d\nTanımlanan UID: %4$d\nSahibi bilinmeyen paket: %5$d</string>
+    <string name="report_scope">Rapor, bu VPN oturumunda NetScope’a yönlendirilen ve doğrulanan TCP ve UDP paketlerini kapsar. Modem sinyalleşmesi ve VPN dışı trafik bu rapora dahil değildir.</string>
+    <string name="voice_title">Sesli komut</string>
+    <string name="voice_listening">Dinleniyor…</string>
+    <string name="voice_status">VPN durumu</string>
+    <string name="voice_unavailable">Bu cihazda çevrimdışı ses tanıma kullanılamıyor.</string>
+    <string name="voice_failure">Ses tanınamadı. Çevrimdışı dil ayarını kontrol et veya ekrandaki düğmeleri kullan.</string>
+    <string name="voice_permission">Sesli komutlar için mikrofon izni gerekiyor.</string>
+    <string name="voice_help">Trafik raporu, uygulamalar, VPN durumu, bağlan veya bağlantıyı kes diyebilirsin.</string>
+    <string name="voice_confirm">VPN durumunu değiştirmek için onayla.</string>
+    <string name="voice_no_change">Bu komut mevcut VPN durumunu değiştiremiyor.</string>
 </resources>
