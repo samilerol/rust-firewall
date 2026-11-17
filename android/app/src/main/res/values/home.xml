@@ -66,4 +66,32 @@
     <string name="voice_help">Try: traffic report, apps, VPN status, connect, or disconnect.</string>
     <string name="voice_confirm">Confirm the requested VPN change.</string>
     <string name="voice_no_change">This command cannot change the current VPN state.</string>
+    <item name="modem_action" type="id" />
+    <item name="modem_heading" type="id" />
+    <item name="modem_events" type="id" />
+    <string name="modem_title">Modem diagnostics</string>
+    <string name="modem_scope">Android events for the default data SIM when this screen opens. Raw modem signalling and packet contents are outside this view.</string>
+    <string name="modem_waiting">Waiting for the first Android radio event.</string>
+    <string name="modem_live">Live Android events · newest first</string>
+    <string name="modem_unavailable">Radio events are unavailable. This screen needs Android 12 or later and a supported mobile connection.</string>
+    <string name="modem_permission_intro">Allow phone state access to see mobile service, data and signal events. No phone number, location or subscriber ID is collected.</string>
+    <string name="modem_permission_button">Allow radio event access</string>
+    <string name="modem_no_sim">Android reports no default mobile data SIM.</string>
+    <string name="modem_unknown">Unknown</string>
+    <string name="modem_lte">LTE</string>
+    <string name="modem_nr">5G NR</string>
+    <string name="modem_2g">2G</string>
+    <string name="modem_3g">3G</string>
+    <string name="modem_iwlan">IWLAN</string>
+    <string name="modem_service_in">In service</string>
+    <string name="modem_service_out">Out of service</string>
+    <string name="modem_service_emergency">Emergency calls only</string>
+    <string name="modem_service_off">Radio off</string>
+    <string name="modem_service_event">Mobile service · %1$s</string>
+    <string name="modem_data_connected">Connected</string>
+    <string name="modem_data_connecting">Connecting</string>
+    <string name="modem_data_disconnected">Disconnected</string>
+    <string name="modem_data_suspended">Suspended</string>
+    <string name="modem_data_event">Mobile data · %1$s · %2$s</string>
+    <string name="modem_signal_event">Android signal level · %1$d/4</string>
 </resources>

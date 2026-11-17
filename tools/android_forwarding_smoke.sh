@@ -35,6 +35,7 @@ done
 "$adb" install android/app/build/outputs/apk/debug/app-debug.apk
 "$adb" install android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 "$adb" shell pm grant org.netscope.ngfw android.permission.POST_NOTIFICATIONS
+"$adb" shell pm grant org.netscope.ngfw android.permission.READ_PHONE_STATE
 "$adb" shell appops set org.netscope.ngfw ACTIVATE_VPN allow
 # Redirect only the preview resolver on this ephemeral runner to the local DNS fixture.
 # The installed APK retains the same resolver and policy as the phone artifact.

@@ -80,6 +80,8 @@ public final class ForwardingSmoke extends Instrumentation {
             click(screen, R.string.vpn_disconnect);
             phase = "restoration after second Stop";
             awaitEcho(8080, null);
+            phase = "Android modem diagnostics";
+            requireModemScreen(screen);
             result.putString("stream", "NETSCOPE_FORWARDING_SMOKE_PASS\n");
             code = Activity.RESULT_OK;
         } catch (Exception | AssertionError error) {
@@ -208,6 +210,35 @@ public final class ForwardingSmoke extends Instrumentation {
             }
             if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("Live report did not appear");
             SystemClock.sleep(100);
+        }
+    }
+
+    private void requireModemScreen(Activity screen) {
+        if (ModemActivity.networkLabel(android.telephony.TelephonyManager.NETWORK_TYPE_LTE) != R.string.modem_lte
+            || ModemActivity.networkLabel(android.telephony.TelephonyManager.NETWORK_TYPE_NR) != R.string.modem_nr
+            || ModemActivity.networkLabel(Integer.MAX_VALUE) != R.string.modem_unknown) {
+            throw new AssertionError("Modem network labels are incorrect");
+        }
+        ActivityMonitor monitor = addMonitor(ModemActivity.class.getName(), null, false);
+        runOnMainSync(() -> screen.findViewById(R.id.modem_action).performClick());
+        Activity modem = waitForMonitorWithTimeout(monitor, 5000);
+        removeMonitor(monitor);
+        if (modem == null) throw new AssertionError("Modem diagnostics did not open");
+        try {
+            long deadline = SystemClock.elapsedRealtime() + 5000;
+            int[] eventCount = {0};
+            while (SystemClock.elapsedRealtime() < deadline) {
+                runOnMainSync(() -> {
+                    android.widget.ListView list = modem.findViewById(R.id.modem_events);
+                    eventCount[0] = list.getAdapter().getCount();
+                });
+                if (eventCount[0] > 0) return;
+                SystemClock.sleep(100);
+            }
+            throw new AssertionError("No public Android telephony callback was displayed");
+        } finally {
+            runOnMainSync(modem::finish);
+            waitForIdleSync();
         }
     }
 

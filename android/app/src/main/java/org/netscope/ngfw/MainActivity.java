@@ -267,6 +267,13 @@ public final class MainActivity extends Activity {
         diagnostics.setText(R.string.diagnostic_title);
         styleButton(diagnostics, SURFACE, MUTED, BORDER);
         add(body, diagnostics, 16);
+
+        Button modem = button();
+        modem.setId(R.id.modem_action);
+        modem.setText(R.string.modem_title);
+        styleButton(modem, SURFACE, TEXT, BORDER);
+        modem.setOnClickListener(view -> startActivity(new Intent(this, ModemActivity.class)));
+        add(body, modem, 8);
     }
 
     private LinearLayout profileRow(int label, int value) {
