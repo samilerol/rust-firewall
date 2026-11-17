@@ -701,3 +701,26 @@ fn budget_rotates_service_independently_of_output_and_keeps_deadlines() {
     relay.reset_network();
     assert!(relay.pump_order.is_empty());
 }
+
+#[test]
+fn handshake_quota_rejects_new_flow_before_protection_and_recovers_after_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let (mut relay, calls) = relay(Action::Allow, false);
+    relay.set_handshake_limit(1).unwrap();
+    assert!(matches!(relay.set_handshake_limit(3), Err(Error::Config)));
+    let first = Client::with_port(endpoint, 12345).syn();
+    let second = Client::with_port(endpoint, 12346).syn();
+    relay.ingest(&first, 0).unwrap();
+    assert_eq!(relay.pending_handshakes(), 1);
+    assert!(matches!(
+        relay.ingest(&second, 0),
+        Err(Error::HandshakeCapacity)
+    ));
+    relay.ingest(&first, 0).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    relay.reset_network();
+    assert_eq!(relay.pending_handshakes(), 0);
+    relay.ingest(&second, 1).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
