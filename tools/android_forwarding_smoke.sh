@@ -2,15 +2,28 @@
 set -euo pipefail
 sdk="$ANDROID_HOME"
 sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+export ANDROID_USER_HOME="$HOME/.android"
+export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+mkdir -p "$ANDROID_AVD_HOME"
 image='system-images;android-35;default;x86_64'
 "$sdkmanager" emulator "$image"
 echo no | "$sdk/cmdline-tools/latest/bin/avdmanager" create avd --force --name netscope-preview --package "$image"
+test -f "$ANDROID_AVD_HOME/netscope-preview.ini"
 sudo chmod a+rw /dev/kvm
+adb="$sdk/platform-tools/adb"
+"$adb" start-server
 "$sdk/emulator/emulator" -avd netscope-preview -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect > /tmp/netscope-emulator.log 2>&1 &
 emulator_pid=$!
 trap 'kill "$emulator_pid" 2>/dev/null || true' EXIT
-adb="$sdk/platform-tools/adb"
-timeout 240 "$adb" wait-for-device
+for _ in {1..120}; do
+    if ! kill -0 "$emulator_pid" 2>/dev/null; then
+        cat /tmp/netscope-emulator.log
+        exit 1
+    fi
+    if "$adb" get-state 2>/dev/null | rg -qx device; then break; fi
+    sleep 2
+done
+"$adb" get-state | rg -qx device
 for _ in {1..120}; do
     if [[ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]; then break; fi
     sleep 2
