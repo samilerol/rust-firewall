@@ -193,13 +193,21 @@ public final class ForwardingSmoke extends Instrumentation {
                 }
                 if (!listed) throw new AssertionError("NetScope's observed traffic is not listed");
             });
-            android.graphics.Bitmap screenshot = getUiAutomation().takeScreenshot();
-            if (screenshot != null) {
-                try (var output = getTargetContext().openFileOutput("netscope-apps.png", 0)) {
-                    screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
-                } finally {
-                    screenshot.recycle();
+            // Capture the Apps window after it gains focus, beyond the transition animation.
+            long screenshotDeadline = SystemClock.elapsedRealtime() + 5000;
+            while (!traffic.hasWindowFocus()) {
+                if (SystemClock.elapsedRealtime() >= screenshotDeadline) {
+                    throw new AssertionError("Apps screen did not gain focus");
                 }
+                SystemClock.sleep(50);
+            }
+            SystemClock.sleep(350);
+            android.graphics.Bitmap screenshot = getUiAutomation().takeScreenshot();
+            if (screenshot == null) throw new AssertionError("Apps screenshot unavailable");
+            try (var output = getTargetContext().openFileOutput("netscope-apps.png", 0)) {
+                screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
+            } finally {
+                screenshot.recycle();
             }
         } finally {
             runOnMainSync(traffic::finish);
