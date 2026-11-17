@@ -29,8 +29,13 @@ fn allow_rule(source: IpAddr, destination: IpAddr, from: u16, to: u16) -> Rule {
     Rule {
         priority: 0,
         action: Action::Allow,
-        source: Some(Cidr::new(source, if source.is_ipv4() { 32 } else { 128 }).expect("valid CIDR")),
-        destination: Some(Cidr::new(destination, if destination.is_ipv4() { 32 } else { 128 }).expect("valid CIDR")),
+        source: Some(
+            Cidr::new(source, if source.is_ipv4() { 32 } else { 128 }).expect("valid CIDR"),
+        ),
+        destination: Some(
+            Cidr::new(destination, if destination.is_ipv4() { 32 } else { 128 })
+                .expect("valid CIDR"),
+        ),
         protocol: Some(Protocol::Udp),
         source_port: Some(from..=from),
         destination_port: Some(to..=to),
@@ -55,11 +60,18 @@ fn probe(
     };
     let (client, localhost) = if ipv6 {
         (
-            IpAddr::V6("fd12:3456:789a::2".parse::<Ipv6Addr>().expect("static IPv6")),
+            IpAddr::V6(
+                "fd12:3456:789a::2"
+                    .parse::<Ipv6Addr>()
+                    .expect("static IPv6"),
+            ),
             IpAddr::V6(Ipv6Addr::LOCALHOST),
         )
     } else {
-        (IpAddr::V4(Ipv4Addr::new(10, 111, 0, 2)), IpAddr::V4(Ipv4Addr::LOCALHOST))
+        (
+            IpAddr::V4(Ipv4Addr::new(10, 111, 0, 2)),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+        )
     };
     let mut rules = vec![allow_rule(client, localhost, CLIENT_PORT, destination_port)];
     if allow_inbound {
