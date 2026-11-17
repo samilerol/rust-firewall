@@ -107,7 +107,7 @@ fn probe(
                     ],
                 );
                 match result {
-                    Ok(value) if value.z() == Ok(true) => return OK,
+                    Ok(value) if matches!(value.z(), Ok(true)) => return OK,
                     _ => {
                         if env.exception_check().unwrap_or(false) {
                             let _ = env.exception_clear();
