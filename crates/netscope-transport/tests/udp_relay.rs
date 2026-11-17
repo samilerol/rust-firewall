@@ -320,3 +320,32 @@ fn relay_configuration_and_zero_capacity_do_not_allocate_sockets() {
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn receive_budget_rotates_past_idle_sockets_and_expires_at_zero() {
+    let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+    server
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let endpoint = server.local_addr().unwrap();
+    let (mut relay, _) = relay(2, Action::Allow, false);
+    relay.send(&request(endpoint, 1234, b"idle"), 0).unwrap();
+    let mut buffer = [0; 32];
+    server.recv_from(&mut buffer).unwrap();
+    let active = relay.send(&request(endpoint, 1235, b"active"), 0).unwrap();
+    let (n, peer) = server.recv_from(&mut buffer).unwrap();
+    server.send_to(&buffer[..n], peer).unwrap();
+    assert!(relay.receive_next(1, 1).unwrap().is_none());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reply = loop {
+        if let Some(reply) = relay.receive_next(1, 1).unwrap() {
+            break reply;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(reply.flow, active.flow);
+    assert_eq!(&reply.result.unwrap()[28..], b"active");
+    assert!(relay.receive_next(10, 0).unwrap().is_none());
+    assert_eq!(relay.flow_count(), 0);
+}

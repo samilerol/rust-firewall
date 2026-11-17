@@ -5,7 +5,7 @@ use netscope_engine::{Config, DropReason, Engine, Outcome, Stats};
 use netscope_packet::{parse, udp, Protocol};
 use netscope_policy::{Action, Policy, PolicyError, Rule};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
 };
@@ -73,9 +73,15 @@ pub struct Sent {
     pub flow: FlowId,
     pub payload_bytes: usize,
 }
+#[derive(Debug)]
+pub struct UdpReply {
+    pub flow: FlowId,
+    pub result: Result<Vec<u8>, RelayError>,
+}
 pub struct UdpRelay<P> {
     engine: Engine,
     sockets: HashMap<FlowId, UdpSocket>,
+    receive_order: VecDeque<FlowId>,
     protector: P,
     mtu: usize,
     receive_buffer: Box<[u8]>,
@@ -97,6 +103,7 @@ impl<P: SocketProtector> UdpRelay<P> {
         Ok(Self {
             engine,
             sockets: HashMap::new(),
+            receive_order: VecDeque::new(),
             protector,
             mtu,
             receive_buffer: vec![0; 65528].into_boxed_slice(),
@@ -120,11 +127,16 @@ impl<P: SocketProtector> UdpRelay<P> {
                 pending.remove_flow(&id);
             })
             .map_err(|_| RelayError::Dropped(DropReason::ClockReversed))?;
+        if expired != 0 {
+            self.receive_order
+                .retain(|id| self.sockets.contains_key(id));
+        }
         self.dns_pending.expire(now);
         Ok(expired)
     }
     fn forget(&mut self, id: &FlowId) {
         self.sockets.remove(id);
+        self.receive_order.retain(|flow| flow != id);
         self.dns_pending.remove_flow(id);
         self.engine.forget_flow(id);
     }
@@ -185,6 +197,7 @@ impl<P: SocketProtector> UdpRelay<P> {
             match opened {
                 Ok(socket) => {
                     self.sockets.insert(id, socket);
+                    self.receive_order.push_back(id);
                 }
                 Err(error) => {
                     self.forget(&id);
@@ -221,6 +234,31 @@ impl<P: SocketProtector> UdpRelay<P> {
     /// Responses require their own CURRENT directional policy decision; outbound allow is not inbound allow.
     pub fn receive(&mut self, id: FlowId, now: u64) -> Result<Vec<u8>, RelayError> {
         self.expire(now)?;
+        self.receive_live(id, now)
+    }
+
+    /// Inspect at most `flow_budget` sockets in round-robin order and return the first reply.
+    /// Per-flow failures identify the affected flow. A zero budget still runs expiry.
+    pub fn receive_next(
+        &mut self,
+        now: u64,
+        flow_budget: usize,
+    ) -> Result<Option<UdpReply>, RelayError> {
+        self.expire(now)?;
+        for _ in 0..flow_budget.min(self.receive_order.len()) {
+            let Some(flow) = self.receive_order.pop_front() else {
+                break;
+            };
+            self.receive_order.push_back(flow);
+            match self.receive_live(flow, now) {
+                Err(RelayError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                result => return Ok(Some(UdpReply { flow, result })),
+            }
+        }
+        Ok(None)
+    }
+
+    fn receive_live(&mut self, id: FlowId, now: u64) -> Result<Vec<u8>, RelayError> {
         let socket = self.sockets.get(&id).ok_or(RelayError::UnknownFlow)?;
         let count = match socket.recv(&mut self.receive_buffer) {
             Ok(count) => count,
@@ -288,6 +326,7 @@ impl<P: SocketProtector> UdpRelay<P> {
     /// Caller must invoke on upstream-network change. No OS network observer is implemented here.
     pub fn reset_network(&mut self) {
         self.sockets.clear();
+        self.receive_order.clear();
         self.dns_pending.clear();
         self.engine.reset_network();
     }
