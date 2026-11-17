@@ -1,0 +1,38 @@
+<resources>
+    <item name="vpn_action" type="id" />
+    <style name="NetScopeTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowBackground">#0C1420</item>
+        <item name="android:colorAccent">#59E6CA</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0C1420</item>
+        <item name="android:navigationBarColor">#0C1420</item>
+    </style>
+    <string name="preview_label">PREVIEW</string>
+    <string name="vpn_connect">Connect</string>
+    <string name="vpn_disconnect">Disconnect</string>
+    <string name="vpn_off">Disconnected</string>
+    <string name="vpn_off_detail">Connect to route web and DNS traffic through NetScope.</string>
+    <string name="vpn_connecting">Connecting…</string>
+    <string name="vpn_disconnecting">Disconnecting…</string>
+    <string name="vpn_connected">VPN active</string>
+    <string name="vpn_connected_detail">The web and DNS profile is active.</string>
+    <string name="vpn_diagnostic_active">Diagnostics active</string>
+    <string name="vpn_diagnostic_detail">All routed traffic is currently blocked.</string>
+    <string name="vpn_failed">Connection failed</string>
+    <string name="vpn_failed_detail">The VPN closed. You can try connecting again.</string>
+    <string name="vpn_unavailable">VPN unavailable</string>
+    <string name="vpn_unavailable_detail">The native network component could not load.</string>
+    <string name="profile_title">Traffic profile</string>
+    <string name="profile_subtitle">Traffic outside this profile is blocked while connected.</string>
+    <string name="profile_web">Web</string>
+    <string name="profile_web_ports">TCP 80 · 443</string>
+    <string name="profile_dns">DNS resolver</string>
+    <string name="profile_dns_name">Cloudflare · 1.1.1.1</string>
+    <string name="diagnostic_title">Diagnostics</string>
+    <string name="diagnostic_body">Diagnostic mode blocks all traffic routed through NetScope until you disconnect.</string>
+    <string name="diagnostic_start">Start diagnostics</string>
+    <string name="notification_needed">Allow notifications to use the VPN stop control.</string>
+    <string name="consent_needed">VPN permission is required to connect.</string>
+    <string name="startup_rejected">Android rejected VPN startup.</string>
+</resources>

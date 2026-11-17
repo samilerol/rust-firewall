@@ -138,5 +138,6 @@ jobs:
             android/app/build/reports/lint-results-debug.*
             /tmp/netscope-emulator.log
             /tmp/netscope-forwarding-emulator.log
+            /tmp/netscope-home.png
           if-no-files-found: ignore
           retention-days: 7

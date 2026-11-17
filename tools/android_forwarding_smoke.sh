@@ -61,3 +61,7 @@ if ! timeout 120 "$adb" shell am instrument -w org.netscope.ngfw.test/org.netsco
     "$adb" shell dumpsys activity services org.netscope.ngfw
     exit 1
 fi
+
+"$adb" shell am start -W -n org.netscope.ngfw/.MainActivity
+"$adb" shell uiautomator dump /sdcard/netscope-home.xml >/dev/null
+"$adb" exec-out screencap -p >/tmp/netscope-home.png

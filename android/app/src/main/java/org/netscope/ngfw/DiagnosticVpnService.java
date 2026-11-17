@@ -22,13 +22,21 @@ public final class DiagnosticVpnService extends VpnService {
     public static final String PREVIEW = "org.netscope.ngfw.START_PREVIEW";
     static final String STOP = "org.netscope.ngfw.STOP_DIAGNOSTIC";
     private static final String CHANNEL = "diagnostic-vpn";
+    enum Status { IDLE, STARTING, FORWARDING, DIAGNOSTIC, STOPPING, FAILED }
+
+    // Service callbacks and worker completion messages update this on the main thread.
+    private static Status status = Status.IDLE;
+    private static Reader activeWorker;
     private Reader reader;
+
+    static Status status() { return status; }
     // Dormant native default-deny context, never used by the diagnostic packet loop.
     private volatile long udpSessionId;
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         boolean forwarding = intent != null && PREVIEW.equals(intent.getAction());
         if (!forwarding && (intent == null || !START.equals(intent.getAction()))) { shutdown(); stopSelf(); return START_NOT_STICKY; }
-        if (reader != null) return START_NOT_STICKY;
+        if (activeWorker != null) return START_NOT_STICKY;
+        status = Status.STARTING;
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel(CHANNEL, "Diagnostic VPN", NotificationManager.IMPORTANCE_LOW));
         PendingIntent stop = PendingIntent.getService(this, 0, new Intent(this, DiagnosticVpnService.class).setAction(STOP), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -55,10 +63,13 @@ public final class DiagnosticVpnService extends VpnService {
             if (tun == null) throw new IllegalStateException("TUN unavailable");
             reader = new Reader(tun, forwarding);
             reader.start();
+            activeWorker = reader;
             tun = null; // reader owns the descriptor, including close on thread exit.
         } catch (RuntimeException | LinkageError error) {
             if (tun != null) try { tun.close(); } catch (IOException ignored) { }
-            shutdown(); stopSelf();
+            shutdown();
+            status = Status.FAILED;
+            stopSelf();
         }
         return START_NOT_STICKY;
     }
@@ -68,7 +79,10 @@ public final class DiagnosticVpnService extends VpnService {
         if (oldSession != 0) NativeCore.stopUdpSession(oldSession);
         Reader old = reader;
         reader = null;
-        if (old != null) old.requestStop();
+        if (old != null) {
+            if (activeWorker == old) status = Status.STOPPING;
+            old.requestStop();
+        }
         stopForeground(STOP_FOREGROUND_REMOVE);
     }
     @Override public void onRevoke() { shutdown(); stopSelf(); super.onRevoke(); }
@@ -90,6 +104,7 @@ public final class DiagnosticVpnService extends VpnService {
                     runForwarding();
                     return;
                 }
+                reportReady(Status.DIAGNOSTIC);
                 byte[] buffer = new byte[65575];
                 StructPollfd poll = new StructPollfd();
                 poll.fd = descriptor.getFileDescriptor();
@@ -114,14 +129,29 @@ public final class DiagnosticVpnService extends VpnService {
             } finally {
                 new android.os.Handler(getMainLooper()).post(() -> {
                     // Do not stop a newer session if an older reader finishes after cancellation.
-                    if (reader == this) { reader = null; stopForeground(STOP_FOREGROUND_REMOVE); stopSelf(); }
+                    if (activeWorker == this) {
+                        activeWorker = null;
+                        status = running.get() ? Status.FAILED : Status.IDLE;
+                    }
+                    if (reader == this) {
+                        reader = null;
+                        stopForeground(STOP_FOREGROUND_REMOVE);
+                        stopSelf();
+                    }
                 });
             }
         }
+        private void reportReady(Status ready) {
+            new android.os.Handler(getMainLooper()).post(() -> {
+                if (activeWorker == this && running.get()) status = ready;
+            });
+        }
+
         private void runForwarding() throws ErrnoException, IOException {
             long session = NativeCore.startForwarding(DiagnosticVpnService.this);
             if (session == 0) return;
             try {
+                reportReady(Status.FORWARDING);
                 byte[] ingress = new byte[1500];
                 byte[] egress = new byte[1500];
                 int pending = 0;

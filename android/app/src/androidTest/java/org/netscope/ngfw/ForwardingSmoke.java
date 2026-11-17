@@ -6,8 +6,6 @@ import android.content.Intent;
 import android.net.VpnService;
 import android.os.Bundle;
 import android.os.SystemClock;
-import android.view.View;
-import android.view.ViewGroup;
 import android.widget.Button;
 import java.io.IOException;
 import java.io.DataInputStream;
@@ -41,7 +39,7 @@ public final class ForwardingSmoke extends Instrumentation {
             phase = "direct DNS fixture";
             requireDnsUdp("10.0.2.2", false);
             phase = "VPN startup";
-            runOnMainSync(() -> click(screen, "Start forwarding preview"));
+            click(screen, R.string.vpn_connect);
             awaitEcho(80, "10.111.0.1");
             phase = "denied TCP port";
             requireBlockedTcp();
@@ -64,13 +62,13 @@ public final class ForwardingSmoke extends Instrumentation {
                 // The same fixture answered this query before VPN startup.
             }
             phase = "restoration after Stop";
-            runOnMainSync(() -> click(screen, "Stop VPN"));
+            click(screen, R.string.vpn_disconnect);
             awaitEcho(8080, null);
             phase = "forwarding session restart";
-            runOnMainSync(() -> click(screen, "Start forwarding preview"));
+            click(screen, R.string.vpn_connect);
             awaitEcho(80, "10.111.0.1");
             requireBlockedTcp();
-            runOnMainSync(() -> click(screen, "Stop VPN"));
+            click(screen, R.string.vpn_disconnect);
             phase = "restoration after second Stop";
             awaitEcho(8080, null);
             result.putString("stream", "NETSCOPE_FORWARDING_SMOKE_PASS\n");
@@ -169,21 +167,19 @@ public final class ForwardingSmoke extends Instrumentation {
         awaitEcho(port, null);
     }
 
-    private static void click(Activity activity, String title) {
-        Button button = findButton(activity.getWindow().getDecorView(), title);
-        if (button == null || !button.isEnabled() || !button.performClick()) {
-            throw new AssertionError("Unavailable button: " + title);
+    private void click(Activity activity, int label) {
+        long deadline = SystemClock.elapsedRealtime() + 5000;
+        boolean[] clicked = {false};
+        while (!clicked[0] && SystemClock.elapsedRealtime() < deadline) {
+            runOnMainSync(() -> {
+                Button button = activity.findViewById(R.id.vpn_action);
+                if (button != null && button.isEnabled()
+                    && activity.getString(label).contentEquals(button.getText())) {
+                    clicked[0] = button.performClick();
+                }
+            });
+            if (!clicked[0]) SystemClock.sleep(50);
         }
-    }
-
-    private static Button findButton(View view, String title) {
-        if (view instanceof Button button && title.contentEquals(button.getText())) return button;
-        if (view instanceof ViewGroup group) {
-            for (int i = 0; i < group.getChildCount(); i++) {
-                Button found = findButton(group.getChildAt(i), title);
-                if (found != null) return found;
-            }
-        }
-        return null;
+        if (!clicked[0]) throw new AssertionError("Unavailable VPN action: " + activity.getString(label));
     }
 }
