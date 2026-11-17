@@ -81,6 +81,18 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/x86_64
           cp target/aarch64-linux-android/release/libnetscope_android.so android/app/src/main/jniLibs/arm64-v8a/
           cp target/x86_64-linux-android/release/libnetscope_android.so android/app/src/main/jniLibs/x86_64/
+      - name: Assert test-only JNI exports absent from Android native libraries
+        run: |
+          nm="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          for abi in arm64-v8a x86_64; do
+            lib="android/app/src/main/jniLibs/$abi/libnetscope_android.so"
+            "$nm" --dynamic --defined-only "$lib" > "/tmp/netscope-$abi-symbols"
+            grep -q 'Java_org_netscope_ngfw_NativeCore_inspect' "/tmp/netscope-$abi-symbols"
+            if grep -E 'Java_org_netscope_ngfw_NativeCore_(probeProtectedSockets|probeProtectedSocketsOnWorker|probeUdpRelayLoopback|probeTunEgressQueue)' "/tmp/netscope-$abi-symbols"; then
+              echo "Host test JNI symbol leaked into Android $abi"
+              exit 1
+            fi
+          done
       - name: Build and lint diagnostic APK
         working-directory: android
         run: ./gradlew --no-daemon --max-workers=2 :app:assembleDebug :app:lintDebug
