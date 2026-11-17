@@ -166,7 +166,10 @@ mod tests {
     struct RefusingProtector;
     impl SocketProtector for RefusingProtector {
         fn protect(&self, _socket: &UdpSocket) -> io::Result<()> {
-            Err(io::Error::new(io::ErrorKind::PermissionDenied, "VPN refused"))
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "VPN refused",
+            ))
         }
     }
 
@@ -186,7 +189,7 @@ mod tests {
         // A malformed replacement must not overwrite the existing allow rule:
         // the next send must still reach the protection hook, not policy denial.
         let mut invalid = rule(client, server);
-        invalid.source_port = Some(99..=98);
+        invalid.source_port = Some(std::ops::RangeInclusive::new(99, 98));
         assert!(matches!(
             session.update_rules(vec![invalid]),
             Err(SessionError::Policy(_))
