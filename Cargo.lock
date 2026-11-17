@@ -185,6 +185,7 @@ name = "netscope-android"
 version = "0.1.0"
 dependencies = [
  "jni",
+ "netscope-conntrack",
  "netscope-engine",
  "netscope-packet",
  "netscope-policy",
