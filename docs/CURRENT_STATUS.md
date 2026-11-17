@@ -26,3 +26,5 @@ Local TCP-guard validation: workspace and fuzz fmt, workspace/feature Clippy, wo
 No paid infrastructure, telemetry or persistent DNS history is authorized. Keep focused branches and durable documentation up to date.
 
 The `feat/tcp-poll-budget` branch adds caller-budgeted round-robin TCP pump service on top of PR #25. It preserves deadline maintenance even with a zero service budget. See TCP_TRANSPORT.md for the caller contract.
+
+PRs #27–#30 add UDP receive budgets, TCP handshake quotas, typed CIDR text parsing and bounded packet-policy loading respectively. These branches build on #26 in order. Check GitHub for current merge and CI status. The loader returns a policy only after validating the whole input. Platform ingestion of policy files remains a separate integration step.

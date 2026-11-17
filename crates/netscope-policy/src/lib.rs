@@ -397,3 +397,6 @@ mod cidr_text_tests {
         }
     }
 }
+
+/// Bounded versioned packet-policy text input.
+pub mod config;
