@@ -97,4 +97,4 @@ mod udp_relay_probe;
 mod tun_egress_probe;
 
 /// Bounded default-deny UDP session kernel; not connected to the diagnostic VPN.
-mod udp_session;
+pub mod udp_session;
