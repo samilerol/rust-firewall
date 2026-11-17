@@ -21,3 +21,4 @@ netscope-policy = { path = "../netscope-policy" }
 netscope-transport = { path = "../netscope-transport" }
 socket2 = "=0.6.5"
 netscope-engine = { path = "../netscope-engine" }
+netscope-conntrack = { path = "../netscope-conntrack" }
