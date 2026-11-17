@@ -98,3 +98,6 @@ mod tun_egress_probe;
 
 /// Bounded default-deny UDP session kernel; not connected to the diagnostic VPN.
 pub mod udp_session;
+
+#[cfg(unix)]
+mod udp_session_jni;
