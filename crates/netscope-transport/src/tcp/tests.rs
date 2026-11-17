@@ -670,3 +670,34 @@ fn nonunicast_source_and_reserved_tcp_bits_do_not_open_sockets() {
 
 #[path = "dns_tests.rs"]
 mod dns_tests;
+
+#[test]
+fn budget_rotates_service_independently_of_output_and_keeps_deadlines() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let (mut relay, _) = relay(Action::Allow, false);
+    let first = relay
+        .ingest(&Client::with_port(endpoint, 12345).syn(), 0)
+        .unwrap();
+    let second = relay
+        .ingest(&Client::with_port(endpoint, 12346).syn(), 0)
+        .unwrap();
+    relay.poll_with_budget(0, 0).unwrap();
+    assert_eq!(relay.pump_order.front(), Some(&first));
+    relay.poll_with_budget(0, 1).unwrap();
+    assert_eq!(relay.pump_order.front(), Some(&second));
+    while relay.next_packet(0).unwrap().is_some() {}
+    assert_eq!(relay.pump_order.front(), Some(&second));
+    relay.poll_with_budget(0, 1).unwrap();
+    assert_eq!(relay.pump_order.front(), Some(&first));
+    for flow in relay.flows.values_mut() {
+        flow.connecting = true;
+    }
+    let report = relay
+        .poll_with_budget(config().connect_timeout_ms, 0)
+        .unwrap();
+    assert_eq!(report.connect_timeouts, 2);
+    assert!(relay.flows.values().all(|flow| flow.upstream.is_none()));
+    relay.reset_network();
+    assert!(relay.pump_order.is_empty());
+}
