@@ -106,15 +106,17 @@ fn probe(
                         JValue::Int(response.len() as jint),
                     ],
                 );
-                match result {
-                    Ok(value) if matches!(value.z(), Ok(true)) => return OK,
-                    _ => {
-                        if env.exception_check().unwrap_or(false) {
-                            let _ = env.exception_clear();
-                        }
-                        return FAILED;
-                    }
+                let accepted = match result {
+                    Ok(value) => matches!(value.z(), Ok(true)),
+                    Err(_) => false,
+                };
+                if accepted {
+                    return OK;
                 }
+                if env.exception_check().unwrap_or(false) {
+                    let _ = env.exception_clear();
+                }
+                return FAILED;
             }
             Err(RelayError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(POLL_DELAY_MS));
