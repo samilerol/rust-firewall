@@ -50,6 +50,7 @@ pub enum Error {
     Packet(netscope_packet::ParseError),
     Unsupported,
     InitialSynRequired,
+    HandshakeCapacity,
     Endpoint,
     Capacity,
     Backpressure,
@@ -281,6 +282,7 @@ pub struct TcpRelay<P> {
     flows: HashMap<FlowId, Flow>,
     round_robin: VecDeque<FlowId>,
     pump_order: VecDeque<FlowId>,
+    handshake_limit: usize,
     protector: P,
     dns_policy: Option<DomainPolicy>,
     dns_ports: BTreeSet<u16>,
@@ -327,6 +329,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             flows: HashMap::new(),
             round_robin: VecDeque::new(),
             pump_order: VecDeque::new(),
+            handshake_limit: config.max_flows,
             protector,
             dns_policy: None,
             dns_ports: BTreeSet::new(),
@@ -421,6 +424,10 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             Outcome::Accepted { .. } => {}
         }
         if !self.flows.contains_key(&id) {
+            if self.pending_handshakes() >= self.handshake_limit {
+                self.engine.forget_flow(&id);
+                return Err(Error::HandshakeCapacity);
+            }
             let opened = (|| -> Result<Flow, Error> {
                 let mut flow = Flow::new(id, self.config, now)?;
                 if self.dns_policy.is_some() && self.dns_ports.contains(&id.destination_port) {
@@ -621,6 +628,28 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     pub fn pending_dns_count(&self) -> usize {
         self.dns_pending.len()
     }
+    /// Set the maximum number of flows awaiting either side of the handshake.
+    /// Lower limits affect new admissions. Zero prevents new handshakes.
+    pub fn set_handshake_limit(&mut self, limit: usize) -> Result<(), Error> {
+        if limit > self.config.max_flows {
+            return Err(Error::Config);
+        }
+        self.handshake_limit = limit;
+        Ok(())
+    }
+
+    pub fn pending_handshakes(&self) -> usize {
+        self.flows
+            .values()
+            .filter(|flow| {
+                !flow.failed
+                    && (flow.connecting
+                        || flow.sockets.get::<StackSocket>(flow.handle).state()
+                            == State::SynReceived)
+            })
+            .count()
+    }
+
     pub fn flow_count(&self) -> usize {
         self.flows.len()
     }
