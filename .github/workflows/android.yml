@@ -68,6 +68,12 @@ jobs:
           mkdir -p /tmp/netscope-native-protect
           javac --release 17 -d /tmp/netscope-native-protect android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/NativeSocketProtectionSmoke.java
           java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-native-protect NativeSocketProtectionSmoke
+      - name: Dormant UDP session JNI lifecycle contract
+        run: |
+          cargo +stable build --locked -p netscope-android
+          mkdir -p /tmp/netscope-session-jni
+          javac --release 17 -d /tmp/netscope-session-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/UdpSessionLifecycleSmoke.java
+          java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-session-jni UdpSessionLifecycleSmoke
       - name: Install Android build components
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"'
       - name: Build Rust JNI for both ABIs
@@ -88,6 +94,9 @@ jobs:
             lib="android/app/src/main/jniLibs/$abi/libnetscope_android.so"
             "$nm" --dynamic --defined-only "$lib" > "/tmp/netscope-$abi-symbols"
             grep -q 'Java_org_netscope_ngfw_NativeCore_inspect' "/tmp/netscope-$abi-symbols"
+            grep -q 'Java_org_netscope_ngfw_NativeCore_startUdpSession' "/tmp/netscope-$abi-symbols"
+            grep -q 'Java_org_netscope_ngfw_NativeCore_stopUdpSession' "/tmp/netscope-$abi-symbols"
+            grep -q 'Java_org_netscope_ngfw_NativeCore_resetUdpSessionNetwork' "/tmp/netscope-$abi-symbols"
             if grep -E 'Java_org_netscope_ngfw_NativeCore_(probeProtectedSockets|probeProtectedSocketsOnWorker|probeUdpRelayLoopback|probeTunEgressQueue)' "/tmp/netscope-$abi-symbols"; then
               echo "Host test JNI symbol leaked into Android $abi"
               exit 1
