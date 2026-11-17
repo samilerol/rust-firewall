@@ -50,6 +50,12 @@ jobs:
           mkdir -p /tmp/netscope-egress-jni
           javac --release 17 -d /tmp/netscope-egress-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java android/app/src/main/java/org/netscope/ngfw/TunPacketWriter.java android/app/src/main/java/org/netscope/ngfw/TunEgressQueue.java tools/TunEgressJniSmoke.java
           java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-egress-jni org.netscope.ngfw.TunEgressJniSmoke
+      - name: Native UDP relay to JNI TUN queue loopback contract
+        run: |
+          cargo +stable build --locked -p netscope-android
+          mkdir -p /tmp/netscope-relay-jni
+          javac --release 17 -d /tmp/netscope-relay-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java android/app/src/main/java/org/netscope/ngfw/TunPacketWriter.java android/app/src/main/java/org/netscope/ngfw/TunEgressQueue.java tools/UdpRelayJniSmoke.java
+          java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-relay-jni org.netscope.ngfw.UdpRelayJniSmoke
       - name: Real JVM JNI boundary checks
         run: |
           cargo +stable build --locked -p netscope-android
