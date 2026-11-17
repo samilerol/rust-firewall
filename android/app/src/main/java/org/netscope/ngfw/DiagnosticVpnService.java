@@ -22,6 +22,8 @@ public final class DiagnosticVpnService extends VpnService {
     private static final String STOP = "org.netscope.ngfw.STOP_DIAGNOSTIC";
     private static final String CHANNEL = "diagnostic-vpn";
     private Reader reader;
+    // Dormant native default-deny context, never used by the diagnostic packet loop.
+    private long udpSessionId;
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         if (intent == null || !START.equals(intent.getAction())) { shutdown(); stopSelf(); return START_NOT_STICKY; }
         if (reader != null) return START_NOT_STICKY;
@@ -39,6 +41,9 @@ public final class DiagnosticVpnService extends VpnService {
             else startForeground(1, notification);
             if (NativeCore.inspect(new byte[0], 0) != -1) throw new IllegalStateException("Native bridge unavailable");
             if (VpnService.prepare(this) != null) throw new IllegalStateException("VPN consent required");
+            long newSession = NativeCore.startUdpSession(this);
+            if (newSession == 0) throw new IllegalStateException("Native UDP session unavailable");
+            udpSessionId = newSession;
             tun = new Builder().setSession("NetScope diagnostic: blocks traffic")
                 .setMtu(1500).addAddress("10.111.0.1", 32).addAddress("fd12:3456:789a::1", 128)
                 .addRoute("0.0.0.0", 0).addRoute("::", 0).addDnsServer("192.0.2.53")
@@ -54,6 +59,9 @@ public final class DiagnosticVpnService extends VpnService {
         return START_NOT_STICKY;
     }
     private void shutdown() {
+        long oldSession = udpSessionId;
+        udpSessionId = 0;
+        if (oldSession != 0) NativeCore.stopUdpSession(oldSession);
         Reader old = reader;
         reader = null;
         if (old != null) old.requestStop();
