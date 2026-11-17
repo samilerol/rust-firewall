@@ -25,3 +25,15 @@ TCP uses smoltcp for a virtual per-flow raw-IP TCP endpoint and a protected nonb
 The TCP DNS guard uses two bounded complete-frame buffers per selected flow, with global/per-flow pending ID budgets shared in design with UDP but owned separately. Unvalidated prefixes never enter the opposite stream; partial writes preserve ownership and invalid/expired stream transactions revoke their flow. See TCP_DNS.md.
 
 Typed CIDRs can be parsed from `address/prefix` strings via `FromStr`. The prefix is one to three ASCII decimal digits and must fit the address family. Host bits retain the same matching semantics as typed construction.
+
+`netscope_policy::config::load` accepts a UTF-8 reader and returns a compiled packet policy. It reads at most 256 KiB plus one detection byte and permits at most 4096 rules. The caller supplies the reader and controls when to replace an active policy. A load error returns no partial policy.
+
+```text
+netscope-policy 1
+default deny
+# priority action protocol source destination source-port destination-port
+rule 10 allow tcp 192.0.2.0/24 * * 443
+rule 20 deny udp * 2001:db8::/32 * 53-54
+```
+
+Blank lines and full-line comments are accepted. Rules use ASCII whitespace between fields. Use `*` for any protocol, endpoint or port. Ports accept a decimal number or inclusive range. Rule order breaks priority ties. The version header and explicit default are required.
