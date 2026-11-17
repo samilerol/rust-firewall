@@ -1,6 +1,6 @@
 # Agent instructions
 
-Read README.md and docs/PROJECT_CONTEXT.md, ARCHITECTURE.md, SECURITY_MODEL.md, DECISIONS.md and ROADMAP.md before changes.
+Read docs/CURRENT_STATUS.md, README.md and docs/PROJECT_CONTEXT.md, ARCHITECTURE.md, SECURITY_MODEL.md, DECISIONS.md and ROADMAP.md before changes.
 
 - Develop independently. Never access, change, expose or copy private `samilerol/netscope` code.
 - Rust-first portable security core. Target 95% Rust where practical; correctness overrides percentage. Minimal Kotlin/Java only for Android APIs. Prefer evaluated Rust-native UI; Flutter requires owner approval.

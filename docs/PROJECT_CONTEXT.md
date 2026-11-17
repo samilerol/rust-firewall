@@ -15,3 +15,5 @@ Current platform milestone adds a deliberately traffic-blocking Android diagnost
 Owner direction: pause APK/UI work and prioritize the portable software. Engine/UDP relay, optimized bounded expiry and compiled policy precedence are documented in ENGINE_TRANSPORT.md; the Android diagnostic is not wired to the new relay. Experimental portable TCP relay is now implemented; its scope/limits are in TCP_TRANSPORT.md. It is not integrated into Android.
 
 Classic UDP DNS parsing and opt-in question-domain filtering now extend the portable relay; limits/correlation/scope are in DNS_POLICY.md. No encrypted/TCP DNS, alias-chain enforcement or DNSSEC validation exists.
+
+DNS transactions now support bounded concurrent IDs per UDP flow and independent first-send expiration, documented in DNS_POLICY.md. Preserve the per-flow/global caps, one index record per query, atomic configuration and individual rejection of late/mismatched DNS replies. See CURRENT_STATUS.md when resuming; verify GitHub main/open PRs before assuming a local checkout is current.

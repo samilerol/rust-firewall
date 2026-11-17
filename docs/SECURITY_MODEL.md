@@ -38,7 +38,7 @@ ENGINE_TRANSPORT.md specifies checked admission, atomic policy changes/revocatio
 
 ## DNS question boundary
 
-DNS_POLICY.md specifies message/name/record/compression/EDNS budgets and the ASCII profile, explicit port activation, label-boundary rules and transaction correlation. Malformed/blocked selected-port queries are not sent. The guard does not validate every RR semantic, DNSSEC/TSIG/AD/Cookies, aliases, rebinding, direct IP access, DNS on other ports or encrypted DNS. One pending question per flow is ephemeral local state, bounded by active mappings. Outbound/inbound packet policy and socket protection remain required; a domain allow is never network authorization.
+DNS_POLICY.md specifies message/name/record/compression/EDNS budgets and the ASCII profile, explicit port activation, label-boundary rules and transaction correlation. Malformed/blocked selected-port queries are not sent. The guard does not validate every RR semantic, DNSSEC/TSIG/AD/Cookies, aliases, rebinding, direct IP access, DNS on other ports or encrypted DNS. Pending questions are ephemeral local state, bounded by per-flow and global budgets with independent first-send expiry; invalid/late DNS replies cannot cancel unrelated requests. Reusing the same ID and question cannot distinguish a delayed old answer; correlation is not replay protection. Outbound/inbound packet policy and socket protection remain required; a domain allow is never network authorization.
 
 ## TCP proxy boundary
 

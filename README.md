@@ -57,7 +57,7 @@ See [engine/transport contracts](docs/ENGINE_TRANSPORT.md). APK/UI work is pause
 
 ## Classic DNS/domain policy
 
-`netscope-dns` adds bounded compression/EDNS/message parsing and exact/subdomain rules. Enable it explicitly on selected UDP destination ports with `UdpRelay::set_dns_filter`; allowed names still require packet policy allow. Replies must match one pending transaction/question per flow. See [DNS scope and limits](docs/DNS_POLICY.md): this does not inspect DoH/DoT, TCP DNS, aliases or direct IP access, and is not DNSSEC validation. APK/UI remains paused.
+`netscope-dns` adds bounded compression/EDNS/message parsing and exact/subdomain rules. Enable it explicitly on selected UDP destination ports with `UdpRelay::set_dns_filter`; allowed names still require packet policy allow. Replies must match a bounded pending transaction/question; concurrent IDs and independent query expiry are supported. See [DNS scope and limits](docs/DNS_POLICY.md): this does not inspect DoH/DoT, TCP DNS, aliases or direct IP access, and is not DNSSEC validation. APK/UI remains paused.
 
 ## Experimental TCP software path
 
