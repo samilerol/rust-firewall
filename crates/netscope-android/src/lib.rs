@@ -90,4 +90,7 @@ mod socket_protection;
 #[cfg(unix)]
 mod vpn_protector;
 
+#[cfg(unix)]
+mod udp_relay_probe;
+
 mod tun_egress_probe;

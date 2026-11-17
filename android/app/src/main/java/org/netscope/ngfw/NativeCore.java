@@ -9,6 +9,8 @@ public final class NativeCore {
     public static native int probeProtectedSockets(Object vpnProtectionService);
     /** Host-testable JavaVM/GlobalRef worker probe; not live VPN forwarding. */
     public static native int probeProtectedSocketsOnWorker(Object vpnProtectionService, boolean revokeBeforeUse);
+    /** Host/loopback-only UDP relay integration probe, not VPN forwarding. */
+    public static native int probeUdpRelayLoopback(Object protector, Object tunQueue, int port, boolean allowInbound);
     /** Synthetic Rust -> JNI -> Java output queue test only; no live VPN packets. */
     public static native int probeTunEgressQueue(Object queue, boolean ipv6);
 }
