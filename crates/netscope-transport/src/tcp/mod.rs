@@ -280,6 +280,7 @@ pub struct TcpRelay<P> {
     engine: Engine,
     flows: HashMap<FlowId, Flow>,
     round_robin: VecDeque<FlowId>,
+    pump_order: VecDeque<FlowId>,
     protector: P,
     dns_policy: Option<DomainPolicy>,
     dns_ports: BTreeSet<u16>,
@@ -325,6 +326,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             engine,
             flows: HashMap::new(),
             round_robin: VecDeque::new(),
+            pump_order: VecDeque::new(),
             protector,
             dns_policy: None,
             dns_ports: BTreeSet::new(),
@@ -345,6 +347,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             })
             .map_err(|_| Error::Clock)?;
         self.round_robin.retain(|id| self.flows.contains_key(id));
+        self.pump_order.retain(|id| self.flows.contains_key(id));
         let mut failed = 0;
         while let Some(id) = self.dns_pending.expired_flow(now) {
             self.dns_pending.remove_flow(&id);
@@ -374,6 +377,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         self.dns_pending.remove_flow(id);
         self.engine.forget_flow(id);
         self.round_robin.retain(|v| v != id);
+        self.pump_order.retain(|v| v != id);
     }
     /// Feed a complete checksummed IP/TCP datagram. A new flow must start with a payload-free SYN.
     pub fn ingest(&mut self, bytes: &[u8], now: u64) -> Result<FlowId, Error> {
@@ -456,6 +460,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
                 Ok(flow) => {
                     self.flows.insert(id, flow);
                     self.round_robin.push_back(id);
+                    self.pump_order.push_back(id);
                     return Ok(id);
                 }
                 Err(error) => {
@@ -476,47 +481,61 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     }
     /// One bounded pump pass: at most one upstream read/write per flow; no background thread.
     pub fn poll(&mut self, now: u64) -> Result<PollReport, Error> {
+        self.poll_with_budget(now, self.config.max_flows)
+    }
+
+    /// Service at most `flow_budget` flows, rotating across calls independently of output draining.
+    /// Zero runs deadline maintenance only. Drive polls frequently enough to service all flows.
+    pub fn poll_with_budget(&mut self, now: u64, flow_budget: usize) -> Result<PollReport, Error> {
         let dns_failures = self.maintain(now)?;
         let mut report = PollReport {
             dns_failures,
             ..PollReport::default()
         };
-        let mut closed = Vec::new();
+        // Enforce connect deadlines even when a flow is outside this pass's service budget.
         for (id, flow) in &mut self.flows {
+            if !flow.failed
+                && flow.connecting
+                && now - flow.created >= self.config.connect_timeout_ms
+            {
+                flow.abort(now);
+                self.dns_pending.remove_flow(id);
+                report.connect_timeouts += 1;
+            }
+        }
+        for _ in 0..flow_budget.min(self.pump_order.len()) {
+            let Some(id) = self.pump_order.pop_front() else {
+                break;
+            };
+            let Some(flow) = self.flows.get_mut(&id) else {
+                continue;
+            };
             if !flow.failed {
-                if flow.connecting && now - flow.created >= self.config.connect_timeout_ms {
+                let context = self.dns_policy.as_ref().map(|policy| DnsContext {
+                    id,
+                    policy,
+                    pending: &mut self.dns_pending,
+                    now,
+                });
+                if let Err(error) = flow.pump(context) {
                     flow.abort(now);
-                    report.connect_timeouts += 1;
-                } else {
-                    let context = self.dns_policy.as_ref().map(|policy| DnsContext {
-                        id: *id,
-                        policy,
-                        pending: &mut self.dns_pending,
-                        now,
-                    });
-                    if let Err(error) = flow.pump(context) {
-                        flow.abort(now);
-                        if matches!(error, Error::Dns(_)) {
-                            report.dns_failures += 1;
-                        } else {
-                            report.io_failures += 1;
-                        }
+                    self.dns_pending.remove_flow(&id);
+                    if matches!(error, Error::Dns(_)) {
+                        report.dns_failures += 1;
+                    } else {
+                        report.io_failures += 1;
                     }
-                }
-                if flow.failed {
-                    self.dns_pending.remove_flow(id);
                 }
             }
             flow.stack_poll(now);
             if flow.sockets.get::<StackSocket>(flow.handle).state() == State::Closed
                 && flow.device.tx.is_empty()
             {
-                closed.push(*id);
+                self.forget(&id);
+                report.closed += 1;
+            } else {
+                self.pump_order.push_back(id);
             }
-        }
-        for id in closed {
-            self.forget(&id);
-            report.closed += 1;
         }
         Ok(report)
     }
@@ -553,6 +572,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         self.flows.clear();
         self.dns_pending.clear();
         self.round_robin.clear();
+        self.pump_order.clear();
         self.engine.reset_network();
     }
     /// Opt-in classic DNS on selected TCP destination ports. Valid changes revoke all flows.

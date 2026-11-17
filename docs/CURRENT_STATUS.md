@@ -24,3 +24,5 @@ Local TCP-guard validation: workspace and fuzz fmt, workspace/feature Clippy, wo
 4. Platform forwarding integration and later emulator/device tests remain separate milestones. APK compilation, cross-compilation, host JVM and loopback tests do not prove VPN routing, leak prevention or battery behavior.
 
 No paid infrastructure, telemetry or persistent DNS history is authorized. Keep focused branches and durable documentation up to date.
+
+The `feat/tcp-poll-budget` branch adds caller-budgeted round-robin TCP pump service on top of PR #25. It preserves deadline maintenance even with a zero service budget. See TCP_TRANSPORT.md for the caller contract.
