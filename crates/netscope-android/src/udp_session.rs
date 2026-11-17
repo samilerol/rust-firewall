@@ -163,6 +163,42 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    struct RefusingProtector;
+    impl SocketProtector for RefusingProtector {
+        fn protect(&self, _socket: &UdpSocket) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, "VPN refused"))
+        }
+    }
+
+    #[test]
+    fn protector_refusal_closes_flow_and_policy_update_is_atomic() {
+        let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 111, 0, 2)), 40962);
+        let server = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5353);
+        let packet = udp::encode(client, server, b"test").unwrap();
+        let mut session = UdpSession::new(RefusingProtector).unwrap();
+        session.update_rules(vec![rule(client, server)]).unwrap();
+        assert!(matches!(
+            session.send(&packet, 1),
+            Err(SessionError::Relay(RelayError::Io(_)))
+        ));
+        assert_eq!(session.flow_count(), 0);
+
+        // A malformed replacement must not overwrite the existing allow rule:
+        // the next send must still reach the protection hook, not policy denial.
+        let mut invalid = rule(client, server);
+        invalid.source_port = Some(99..=98);
+        assert!(matches!(
+            session.update_rules(vec![invalid]),
+            Err(SessionError::Policy(_))
+        ));
+        assert!(matches!(
+            session.send(&packet, 2),
+            Err(SessionError::Relay(RelayError::Io(_)))
+        ));
+        assert_eq!(session.flow_count(), 0);
+        session.revoke();
+    }
+
     #[test]
     fn loopback_response_requires_reverse_rule_and_reset_closes_flows() {
         let calls = AtomicUsize::new(0);
