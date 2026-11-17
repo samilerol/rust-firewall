@@ -74,6 +74,12 @@ jobs:
           mkdir -p /tmp/netscope-session-jni
           javac --release 17 -d /tmp/netscope-session-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/UdpSessionLifecycleSmoke.java
           java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-session-jni UdpSessionLifecycleSmoke
+      - name: Deny-only Rust UDP ingress through real JNI session
+        run: |
+          cargo +stable build --locked -p netscope-android
+          mkdir -p /tmp/netscope-ingress-jni
+          javac --release 17 -d /tmp/netscope-ingress-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/UdpIngressJniSmoke.java
+          java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-ingress-jni UdpIngressJniSmoke crates/netscope-packet/tests/fixtures/v4-udp-odd.hex crates/netscope-packet/tests/fixtures/v6-udp-odd.hex crates/netscope-packet/tests/fixtures/v4-tcp-odd.hex
       - name: Install Android build components
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"'
       - name: Build Rust JNI for both ABIs
@@ -95,6 +101,7 @@ jobs:
             "$nm" --dynamic --defined-only "$lib" > "/tmp/netscope-$abi-symbols"
             grep -q 'Java_org_netscope_ngfw_NativeCore_inspect' "/tmp/netscope-$abi-symbols"
             grep -q 'Java_org_netscope_ngfw_NativeCore_startUdpSession' "/tmp/netscope-$abi-symbols"
+            grep -q 'Java_org_netscope_ngfw_NativeCore_inspectUdpSession' "/tmp/netscope-$abi-symbols"
             grep -q 'Java_org_netscope_ngfw_NativeCore_stopUdpSession' "/tmp/netscope-$abi-symbols"
             grep -q 'Java_org_netscope_ngfw_NativeCore_resetUdpSessionNetwork' "/tmp/netscope-$abi-symbols"
             if grep -E 'Java_org_netscope_ngfw_NativeCore_(probeProtectedSockets|probeProtectedSocketsOnWorker|probeUdpRelayLoopback|probeTunEgressQueue)' "/tmp/netscope-$abi-symbols"; then
