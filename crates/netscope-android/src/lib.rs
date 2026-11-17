@@ -84,13 +84,14 @@ mod tests {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 mod socket_protection;
 
 #[cfg(unix)]
 mod vpn_protector;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 mod udp_relay_probe;
 
+#[cfg(not(target_os = "android"))]
 mod tun_egress_probe;
