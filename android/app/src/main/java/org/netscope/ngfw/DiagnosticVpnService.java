@@ -16,24 +16,26 @@ import android.system.StructPollfd;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Explicit drop-all diagnostic. Single reader owns/ closes the TUN; no transport sockets. */
+/** User-selected diagnostic or forwarding preview. One worker owns the TUN. */
 public final class DiagnosticVpnService extends VpnService {
     public static final String START = "org.netscope.ngfw.START_DIAGNOSTIC";
+    public static final String PREVIEW = "org.netscope.ngfw.START_PREVIEW";
     private static final String STOP = "org.netscope.ngfw.STOP_DIAGNOSTIC";
     private static final String CHANNEL = "diagnostic-vpn";
     private Reader reader;
     // Dormant native default-deny context, never used by the diagnostic packet loop.
     private volatile long udpSessionId;
     @Override public int onStartCommand(Intent intent, int flags, int id) {
-        if (intent == null || !START.equals(intent.getAction())) { shutdown(); stopSelf(); return START_NOT_STICKY; }
+        boolean forwarding = intent != null && PREVIEW.equals(intent.getAction());
+        if (!forwarding && (intent == null || !START.equals(intent.getAction()))) { shutdown(); stopSelf(); return START_NOT_STICKY; }
         if (reader != null) return START_NOT_STICKY;
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.createNotificationChannel(new NotificationChannel(CHANNEL, "Diagnostic VPN", NotificationManager.IMPORTANCE_LOW));
         PendingIntent stop = PendingIntent.getService(this, 0, new Intent(this, DiagnosticVpnService.class).setAction(STOP), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification notification = new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("Diagnostic VPN — traffic blocked")
-            .setContentText("All routed packets are discarded. No forwarding.")
+            .setContentTitle(forwarding ? "NetScope forwarding preview" : "Diagnostic VPN — traffic blocked")
+            .setContentText(forwarding ? "TCP web and DNS allowed. Other routed traffic blocked." : "All routed packets are discarded. No forwarding.")
             .setOngoing(true).addAction(new Notification.Action.Builder(null, "Stop", stop).build()).build();
         ParcelFileDescriptor tun = null;
         try {
@@ -41,15 +43,17 @@ public final class DiagnosticVpnService extends VpnService {
             else startForeground(1, notification);
             if (NativeCore.inspect(new byte[0], 0) != -1) throw new IllegalStateException("Native bridge unavailable");
             if (VpnService.prepare(this) != null) throw new IllegalStateException("VPN consent required");
-            long newSession = NativeCore.startUdpSession(this);
-            if (newSession == 0) throw new IllegalStateException("Native UDP session unavailable");
-            udpSessionId = newSession;
-            tun = new Builder().setSession("NetScope diagnostic: blocks traffic")
+            if (!forwarding) {
+                udpSessionId = NativeCore.startUdpSession(this);
+                if (udpSessionId == 0) throw new IllegalStateException("Native UDP session unavailable");
+            }
+            tun = new Builder().setSession(forwarding ? "NetScope preview" : "NetScope diagnostic: blocks traffic")
                 .setMtu(1500).addAddress("10.111.0.1", 32).addAddress("fd12:3456:789a::1", 128)
-                .addRoute("0.0.0.0", 0).addRoute("::", 0).addDnsServer("192.0.2.53")
-                .setBlocking(true).establish();
+                .addRoute("0.0.0.0", 0).addRoute("::", 0)
+                .addDnsServer(forwarding ? "1.1.1.1" : "192.0.2.53")
+                .setBlocking(!forwarding).establish();
             if (tun == null) throw new IllegalStateException("TUN unavailable");
-            reader = new Reader(tun);
+            reader = new Reader(tun, forwarding);
             reader.start();
             tun = null; // reader owns the descriptor, including close on thread exit.
         } catch (RuntimeException | LinkageError error) {
@@ -73,10 +77,19 @@ public final class DiagnosticVpnService extends VpnService {
     private final class Reader extends Thread {
         private final ParcelFileDescriptor descriptor;
         private final AtomicBoolean running = new AtomicBoolean(true);
-        Reader(ParcelFileDescriptor descriptor) { super("netscope-tun"); this.descriptor = descriptor; }
+        private final boolean forwarding;
+        Reader(ParcelFileDescriptor descriptor, boolean forwarding) {
+            super("netscope-tun");
+            this.descriptor = descriptor;
+            this.forwarding = forwarding;
+        }
         void requestStop() { running.set(false); interrupt(); }
         @Override public void run() {
             try (ParcelFileDescriptor.AutoCloseInputStream input = new ParcelFileDescriptor.AutoCloseInputStream(descriptor)) {
+                if (forwarding) {
+                    runForwarding();
+                    return;
+                }
                 byte[] buffer = new byte[65575];
                 StructPollfd poll = new StructPollfd();
                 poll.fd = descriptor.getFileDescriptor();
@@ -105,5 +118,48 @@ public final class DiagnosticVpnService extends VpnService {
                 });
             }
         }
+        private void runForwarding() throws ErrnoException, IOException {
+            long session = NativeCore.startForwarding(DiagnosticVpnService.this);
+            if (session == 0) return;
+            try {
+                byte[] ingress = new byte[1500];
+                byte[] egress = new byte[1500];
+                int pending = 0;
+                StructPollfd poll = new StructPollfd();
+                poll.fd = descriptor.getFileDescriptor();
+                StructPollfd[] polls = {poll};
+                while (running.get()) {
+                    poll.events = (short) (OsConstants.POLLIN | (pending > 0 ? OsConstants.POLLOUT : 0));
+                    poll.revents = 0;
+                    Os.poll(polls, 20);
+                    if (!running.get()) break;
+                    if ((poll.revents & (OsConstants.POLLERR | OsConstants.POLLHUP | OsConstants.POLLNVAL)) != 0) break;
+                    if ((poll.revents & OsConstants.POLLIN) != 0) {
+                        try {
+                            int n = Os.read(poll.fd, ingress, 0, ingress.length);
+                            if (n <= 0 || NativeCore.forwardPacket(session, ingress, n) < 0) break;
+                        } catch (ErrnoException error) {
+                            if (error.errno != OsConstants.EAGAIN && error.errno != OsConstants.EINTR) throw error;
+                        }
+                    }
+                    // Bound the work per wake and keep one complete packet on EAGAIN.
+                    for (int i = 0; running.get() && i < 8; i++) {
+                        if (pending == 0) pending = NativeCore.pollForwarding(session, egress);
+                        if (pending < 0) return;
+                        if (pending == 0) break;
+                        try {
+                            if (Os.write(poll.fd, egress, 0, pending) != pending) return;
+                            pending = 0;
+                        } catch (ErrnoException error) {
+                            if (error.errno != OsConstants.EAGAIN && error.errno != OsConstants.EINTR) throw error;
+                            break;
+                        }
+                    }
+                }
+            } finally {
+                NativeCore.stopForwarding(session);
+            }
+        }
+
     }
 }

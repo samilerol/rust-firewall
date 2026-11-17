@@ -1,4 +1,4 @@
-name: Android diagnostic build
+name: Android preview build and smoke
 on:
   push:
     branches: [main]
@@ -80,6 +80,12 @@ jobs:
           mkdir -p /tmp/netscope-ingress-jni
           javac --release 17 -d /tmp/netscope-ingress-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/UdpIngressJniSmoke.java
           java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-ingress-jni UdpIngressJniSmoke crates/netscope-packet/tests/fixtures/v4-udp-odd.hex crates/netscope-packet/tests/fixtures/v6-udp-odd.hex crates/netscope-packet/tests/fixtures/v4-tcp-odd.hex
+      - name: Forwarding preview JNI lifecycle
+        run: |
+          cargo +stable build --locked -p netscope-android
+          mkdir -p /tmp/netscope-forwarding-jni
+          javac --release 17 -d /tmp/netscope-forwarding-jni android/app/src/main/java/org/netscope/ngfw/NativeCore.java tools/ForwardingLifecycleSmoke.java
+          java -Xcheck:jni -Djava.library.path=target/debug -cp /tmp/netscope-forwarding-jni org.netscope.ngfw.ForwardingLifecycleSmoke
       - name: Install Android build components
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"'
       - name: Build Rust JNI for both ABIs
@@ -109,9 +115,9 @@ jobs:
               exit 1
             fi
           done
-      - name: Build and lint diagnostic APK
+      - name: Build and lint preview APK
         working-directory: android
-        run: ./gradlew --no-daemon --max-workers=2 :app:assembleDebug :app:lintDebug
+        run: ./gradlew --no-daemon --max-workers=2 :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
       - name: Check packaged native libraries
         run: |
           python3 - <<'PY'
@@ -120,13 +126,17 @@ jobs:
               for abi in ['arm64-v8a', 'x86_64']:
                   assert 'lib/' + abi + '/libnetscope_android.so' in apk.namelist()
           PY
+      - name: Exercise preview routing on Android emulator
+        run: bash tools/android_forwarding_smoke.sh
       - name: Preserve APK and lint evidence
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: android-diagnostic
+          name: android-preview
           path: |
             android/app/build/outputs/apk/debug/*.apk
             android/app/build/reports/lint-results-debug.*
+            /tmp/netscope-emulator.log
+            /tmp/netscope-forwarding-emulator.log
           if-no-files-found: ignore
           retention-days: 7

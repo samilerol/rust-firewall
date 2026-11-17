@@ -28,3 +28,5 @@ No paid infrastructure, telemetry or persistent DNS history is authorized. Keep 
 The `feat/tcp-poll-budget` branch adds caller-budgeted round-robin TCP pump service on top of PR #25. It preserves deadline maintenance even with a zero service budget. See TCP_TRANSPORT.md for the caller contract.
 
 PRs #27–#30 add UDP receive budgets, TCP handshake quotas, typed CIDR text parsing and bounded packet-policy loading respectively. These branches build on #26 in order. Check GitHub for current merge and CI status. The loader returns a policy only after validating the whole input. Platform ingestion of policy files remains a separate integration step.
+
+The Android forwarding preview uses the PR #30 stack as its base. The explicit preview action connects IPv4/IPv6 TUN input to the Rust TCP/UDP relays and returns checked responses to TUN. The fixed default-deny profile allows TCP ports 80 and 443 and classic DNS to 1.1.1.1. Diagnostic mode remains available. See ANDROID_INTEGRATION.md for the release verification still required.
