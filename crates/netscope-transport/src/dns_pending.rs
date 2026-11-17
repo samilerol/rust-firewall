@@ -21,6 +21,16 @@ impl PendingQueries {
             limits,
         }
     }
+    pub(crate) fn contains(&self, flow: &FlowId, id: u16) -> bool {
+        self.flows
+            .get(flow)
+            .is_some_and(|queries| queries.contains_key(&id))
+    }
+    pub(crate) fn expired_flow(&self, now: u64) -> Option<FlowId> {
+        self.order
+            .first()
+            .and_then(|&(sent, flow, _)| (now - sent >= self.limits.query_timeout).then_some(flow))
+    }
     pub(crate) fn len(&self) -> usize {
         self.order.len()
     }

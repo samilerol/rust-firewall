@@ -20,4 +20,6 @@ The netscope-engine and netscope-transport crates implement checked admission an
 
 The relay optionally calls netscope-dns for explicitly selected UDP ports, with bounded concurrent canonical question/ID transactions per flow, independent first-send expiry and current response-policy checks. DNS policy cannot grant IP permission. See DNS_POLICY.md for conservative parsing profiles, state revocation and bypass/encryption limitations.
 
-TCP uses smoltcp for a virtual per-flow raw-IP TCP endpoint and a protected nonblocking OS TCP stream for upstream bytes. Accepted SYN precedes upstream creation; OS read/write buffers are bridged with bounded zero-extra-queue closures. See TCP_TRANSPORT.md for limits, dependency/MSRV choice, scheduling, teardown, half-close and unimplemented TCP DNS semantics.
+TCP uses smoltcp for a virtual per-flow raw-IP TCP endpoint and a protected nonblocking OS TCP stream for upstream bytes. Accepted SYN precedes upstream creation; OS read/write buffers are bridged with bounded zero-extra-queue closures. See TCP_TRANSPORT.md for limits, dependency/MSRV choice, scheduling, teardown, half-close and optional TCP DNS framing/semantics (TCP_DNS.md).
+
+The TCP DNS guard uses two bounded complete-frame buffers per selected flow, with global/per-flow pending ID budgets shared in design with UDP but owned separately. Unvalidated prefixes never enter the opposite stream; partial writes preserve ownership and invalid/expired stream transactions revoke their flow. See TCP_DNS.md.

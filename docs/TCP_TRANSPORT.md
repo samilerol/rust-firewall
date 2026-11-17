@@ -2,7 +2,7 @@
 
 ## Architecture and implemented boundary
 
-`netscope_transport::tcp::TcpRelay` bridges raw IP/TCP datagrams to one protected, nonblocking OS TCP stream per original flow. It is a terminating TCP proxy: smoltcp handles the virtual-client handshake, sequence/ACK/retransmit/window/FIN state; the OS handles the independent upstream connection. Source ports/ISNs/timing are not preserved end-to-end, and a virtual handshake is not proof that the upstream application is ready. Stream bytes are opaque; there is no TLS interception or HTTP inspection.
+`netscope_transport::tcp::TcpRelay` bridges raw IP/TCP datagrams to one protected, nonblocking OS TCP stream per original flow. It is a terminating TCP proxy: smoltcp handles the virtual-client handshake, sequence/ACK/retransmit/window/FIN state; the OS handles the independent upstream connection. Source ports/ISNs/timing are not preserved end-to-end, and a virtual handshake is not proof that the upstream application is ready. Stream bytes are opaque unless the opt-in classic DNS guard is enabled on selected ports (TCP_DNS.md). There is no TLS interception or HTTP inspection.
 
 This is library software with real host loopback coverage. No TUN/event-loop executable, automatic network observer, readiness multiplexer, JNI socket-protection implementation or Android integration is added. APK/UI remains paused; the existing diagnostic remains drop-all.
 
@@ -43,11 +43,13 @@ Time is monotonic u64 milliseconds. smoltcp stores i64 microseconds; MAX_TIME_MS
 - Connect deadline 1..30000 ms, idle timeout 1..86400000 ms and connect <= idle. The API does not spawn threads, allocate queues without a cap, or busy-wait internally. Poll cost is O(active flows); no readiness multiplexer is present.
 - Device output tokens rely on smoltcp's MTU contract. An internal assertion rejects above-MTU output before allocation if the dependency breaks that contract; fuzz/host tests exercise it, without claiming a proof against all dependency bugs.
 
+The optional DNS guard reserves an additional 8196 frame-payload bytes per guarded flow and validates its worst-case activation budget. Pending names/index metadata are separately count-bounded. See TCP_DNS.md for complete-frame admission, duplicate IDs, pipeline/half-close behavior, timeout and fail-closed teardown. PollReport.dns_failures distinguishes DNS failures detected during that poll from OS I/O failures.
+
 ## Scope and remaining work
 
-This adds generic TCP bytes, **not TCP DNS filtering**. The existing DNS guard applies only to selected UDP ports. For a profile requiring classic DNS-domain enforcement, deny TCP/53 in packet policy until a bounded TCP DNS stream guard exists; DoH/DoT/DoQ and alias/rebinding controls remain outside that guard. Other current limitations include initial ECN/TFO/simultaneous-open, urgent semantics, per-app UID attribution, OS network transition hooks, transparent source identity, ICMP/path-MTU/error translation and WAN/device interoperability. No production secure/leak-free claim is made.
+Generic TCP remains opaque by default. An opt-in bounded TCP DNS stream guard now exists (TCP_DNS.md); UDP and TCP guards require separate activation on explicit ports. Deny an unguarded protocol/port when classic DNS enforcement is required. DoH/DoT/DoQ and alias/rebinding controls remain outside both guards. Other current limitations include initial ECN/TFO/simultaneous-open, urgent semantics, per-app UID attribution, OS network transition hooks, transparent source identity, ICMP/path-MTU/error translation and WAN/device interoperability. No production secure/leak-free claim is made.
 
-Next: readiness/backpressure scheduling, per-app/global fairness and handshake quotas, evaluated TCP DNS framing, broader options/loss/reorder/long-running tests, protected platform integration and measured memory/battery behavior. Do not convert host evidence into Android or cross-network protection claims.
+Next: readiness/backpressure scheduling, per-app/global fairness and handshake quotas, broader DNS interoperability, broader options/loss/reorder/long-running tests, protected platform integration and measured memory/battery behavior. Do not convert host evidence into Android or cross-network protection claims.
 
 ## Validation
 
