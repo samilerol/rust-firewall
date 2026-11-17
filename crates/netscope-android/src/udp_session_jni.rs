@@ -8,8 +8,8 @@ use jni::{
     sys::{jint, jlong},
     JNIEnv,
 };
-use netscope_transport::SocketProtector;
 use netscope_packet::{parse_checked, ChecksumPolicy, Protocol};
+use netscope_transport::SocketProtector;
 use std::{
     io,
     net::UdpSocket,
@@ -153,8 +153,10 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_inspectUdpSession(
     bytes: JByteArray<'_>,
     length: jint,
 ) -> jint {
-    catch_unwind(AssertUnwindSafe(|| inspect_udp(&mut env, id, bytes, length)))
-        .unwrap_or(FAILURE)
+    catch_unwind(AssertUnwindSafe(|| {
+        inspect_udp(&mut env, id, bytes, length)
+    }))
+    .unwrap_or(FAILURE)
 }
 
 // SAFETY REVIEW: JNI exported symbols only. No pointer handling, no native
