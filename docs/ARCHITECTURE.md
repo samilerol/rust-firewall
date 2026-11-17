@@ -23,3 +23,5 @@ The relay optionally calls netscope-dns for explicitly selected UDP ports, with 
 TCP uses smoltcp for a virtual per-flow raw-IP TCP endpoint and a protected nonblocking OS TCP stream for upstream bytes. Accepted SYN precedes upstream creation; OS read/write buffers are bridged with bounded zero-extra-queue closures. See TCP_TRANSPORT.md for limits, dependency/MSRV choice, scheduling, teardown, half-close and optional TCP DNS framing/semantics (TCP_DNS.md).
 
 The TCP DNS guard uses two bounded complete-frame buffers per selected flow, with global/per-flow pending ID budgets shared in design with UDP but owned separately. Unvalidated prefixes never enter the opposite stream; partial writes preserve ownership and invalid/expired stream transactions revoke their flow. See TCP_DNS.md.
+
+Typed CIDRs can be parsed from `address/prefix` strings via `FromStr`. The prefix is one to three ASCII decimal digits and must fit the address family. Host bits retain the same matching semantics as typed construction.
