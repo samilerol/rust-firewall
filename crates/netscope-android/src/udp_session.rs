@@ -39,7 +39,10 @@ impl<P: SocketProtector> UdpSession<P> {
             SESSION_MTU,
             protector,
         )?;
-        Ok(Self { relay, active: true })
+        Ok(Self {
+            relay,
+            active: true,
+        })
     }
 
     /// Always default-deny. A successful update revokes prior flow associations.
@@ -68,7 +71,9 @@ impl<P: SocketProtector> UdpSession<P> {
         if !self.active {
             return Err(SessionError::Revoked);
         }
-        self.relay.receive(flow, now_ms).map_err(SessionError::Relay)
+        self.relay
+            .receive(flow, now_ms)
+            .map_err(SessionError::Relay)
     }
 
     /// Must be called when connectivity changes; closes every old socket.
@@ -135,14 +140,26 @@ mod tests {
         let from = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 111, 0, 2)), 40960);
         let to = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 53);
         let packet = udp::encode(from, to, b"test").unwrap();
-        assert!(matches!(session.send(&packet, 1), Err(SessionError::Relay(RelayError::Dropped(_)))));
+        assert!(matches!(
+            session.send(&packet, 1),
+            Err(SessionError::Relay(RelayError::Dropped(_)))
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         session.revoke();
         assert!(!session.is_active());
         assert_eq!(session.flow_count(), 0);
-        assert!(matches!(session.send(&packet, 2), Err(SessionError::Revoked)));
-        assert!(matches!(session.update_rules(vec![rule(from, to)]), Err(SessionError::Revoked)));
-        assert!(matches!(session.reset_network(), Err(SessionError::Revoked)));
+        assert!(matches!(
+            session.send(&packet, 2),
+            Err(SessionError::Revoked)
+        ));
+        assert!(matches!(
+            session.update_rules(vec![rule(from, to)]),
+            Err(SessionError::Revoked)
+        ));
+        assert!(matches!(
+            session.reset_network(),
+            Err(SessionError::Revoked)
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -151,7 +168,9 @@ mod tests {
         let calls = AtomicUsize::new(0);
         let mut session = UdpSession::new(CountingProtector(&calls)).unwrap();
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        server.set_read_timeout(Some(std::time::Duration::from_secs(1))).unwrap();
+        server
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
         let from = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 111, 0, 2)), 40961);
         let to = server.local_addr().unwrap();
         session.update_rules(vec![rule(from, to)]).unwrap();
@@ -164,7 +183,9 @@ mod tests {
         let mut denied = false;
         for time in 2..200 {
             match session.receive(flow, time) {
-                Err(SessionError::Relay(RelayError::Io(e))) if e.kind() == io::ErrorKind::WouldBlock => {
+                Err(SessionError::Relay(RelayError::Io(e)))
+                    if e.kind() == io::ErrorKind::WouldBlock =>
+                {
                     std::thread::sleep(std::time::Duration::from_millis(2));
                 }
                 Err(SessionError::Relay(RelayError::Dropped(_))) => {
@@ -178,7 +199,9 @@ mod tests {
         assert_eq!(session.flow_count(), 0);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-        session.update_rules(vec![rule(from, to), rule(to, from)]).unwrap();
+        session
+            .update_rules(vec![rule(from, to), rule(to, from)])
+            .unwrap();
         let new_flow = session.send(&packet, 250).unwrap().flow;
         let (_, peer) = server.recv_from(&mut buf).unwrap();
         server.send_to(b"accepted", peer).unwrap();
@@ -190,7 +213,9 @@ mod tests {
                     accepted = true;
                     break;
                 }
-                Err(SessionError::Relay(RelayError::Io(e))) if e.kind() == io::ErrorKind::WouldBlock => {
+                Err(SessionError::Relay(RelayError::Io(e)))
+                    if e.kind() == io::ErrorKind::WouldBlock =>
+                {
                     std::thread::sleep(std::time::Duration::from_millis(2));
                 }
                 other => panic!("unexpected response: {other:?}"),
@@ -200,8 +225,14 @@ mod tests {
         assert_eq!(session.flow_count(), 1);
         session.reset_network().unwrap();
         assert_eq!(session.flow_count(), 0);
-        assert!(matches!(session.receive(new_flow, 500), Err(SessionError::Relay(RelayError::UnknownFlow))));
+        assert!(matches!(
+            session.receive(new_flow, 500),
+            Err(SessionError::Relay(RelayError::UnknownFlow))
+        ));
         session.revoke();
-        assert!(matches!(session.receive(new_flow, 501), Err(SessionError::Revoked)));
+        assert!(matches!(
+            session.receive(new_flow, 501),
+            Err(SessionError::Revoked)
+        ));
     }
 }
