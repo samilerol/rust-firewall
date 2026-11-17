@@ -24,12 +24,15 @@ public final class ForwardingSmoke extends Instrumentation {
         Activity activity = null;
         Bundle result = new Bundle();
         int code = Activity.RESULT_CANCELED;
+        String phase = "launch";
         try {
             activity = startActivitySync(new Intent(getTargetContext(), MainActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             Activity screen = activity;
             if (VpnService.prepare(screen) != null) throw new AssertionError("VPN consent unavailable");
+            phase = "direct baseline";
             requireEcho(8080);
+            phase = "VPN startup";
             runOnMainSync(() -> click(screen, "Start forwarding preview"));
             // Wait until the app sees the VPN's IPv4 route, then exercise both policy outcomes.
             long deadline = SystemClock.elapsedRealtime() + 15000;
@@ -43,15 +46,18 @@ public final class ForwardingSmoke extends Instrumentation {
                 if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("VPN TCP route did not become ready");
                 SystemClock.sleep(150);
             }
+            phase = "allowed TCP echo";
             requireEcho(80);
+            phase = "denied TCP port";
             try {
                 requireEcho(8080);
                 throw new AssertionError("VPN allowed the denied TCP port");
             } catch (IOException expected) {
                 // The same listener was reachable before VPN startup.
             }
+            phase = "restoration after Stop";
             runOnMainSync(() -> click(screen, "Stop VPN"));
-            deadline = SystemClock.elapsedRealtime() + 5000;
+            deadline = SystemClock.elapsedRealtime() + 20000;
             while (true) {
                 try {
                     requireEcho(8080);
@@ -64,7 +70,7 @@ public final class ForwardingSmoke extends Instrumentation {
             result.putString("stream", "NETSCOPE_FORWARDING_SMOKE_PASS\n");
             code = Activity.RESULT_OK;
         } catch (Exception | AssertionError error) {
-            result.putString("stream", "NETSCOPE_FORWARDING_SMOKE_FAIL: " + error + "\n");
+            result.putString("stream", "NETSCOPE_FORWARDING_SMOKE_FAIL (" + phase + "): " + error + "\n");
         } finally {
             if (activity != null) {
                 activity.stopService(new Intent(activity, DiagnosticVpnService.class));

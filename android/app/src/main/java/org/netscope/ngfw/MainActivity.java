@@ -40,7 +40,7 @@ public final class MainActivity extends Activity {
         start.setOnClickListener(view -> requestVpn(CONSENT));
         preview.setOnClickListener(view -> requestVpn(CONSENT_PREVIEW));
         stop.setOnClickListener(view -> {
-            stopService(new Intent(this, DiagnosticVpnService.class));
+            startService(new Intent(this, DiagnosticVpnService.class).setAction(DiagnosticVpnService.STOP));
             status.append("\nStop requested.");
         });
     }

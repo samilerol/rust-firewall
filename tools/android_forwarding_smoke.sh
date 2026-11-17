@@ -53,4 +53,8 @@ PY
 echo_pid=$!
 trap 'kill "$emulator_pid" 2>/dev/null || true; sudo kill "$echo_pid" 2>/dev/null || true' EXIT
 timeout 90 "$adb" shell am instrument -w org.netscope.ngfw.test/org.netscope.ngfw.ForwardingSmoke | tee /tmp/netscope-forwarding-emulator.log
-grep -q 'NETSCOPE_FORWARDING_SMOKE_PASS' /tmp/netscope-forwarding-emulator.log
+if ! grep -q 'NETSCOPE_FORWARDING_SMOKE_PASS' /tmp/netscope-forwarding-emulator.log; then
+    "$adb" logcat -d -s AndroidRuntime ActivityManager Vpn ConnectivityService
+    "$adb" shell dumpsys activity services org.netscope.ngfw
+    exit 1
+fi

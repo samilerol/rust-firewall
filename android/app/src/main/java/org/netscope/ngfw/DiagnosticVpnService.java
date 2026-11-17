@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class DiagnosticVpnService extends VpnService {
     public static final String START = "org.netscope.ngfw.START_DIAGNOSTIC";
     public static final String PREVIEW = "org.netscope.ngfw.START_PREVIEW";
-    private static final String STOP = "org.netscope.ngfw.STOP_DIAGNOSTIC";
+    static final String STOP = "org.netscope.ngfw.STOP_DIAGNOSTIC";
     private static final String CHANNEL = "diagnostic-vpn";
     private Reader reader;
     // Dormant native default-deny context, never used by the diagnostic packet loop.
