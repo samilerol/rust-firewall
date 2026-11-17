@@ -5,7 +5,7 @@ use jni::{
     sys::{jint, jlong},
     JNIEnv,
 };
-use netscope_packet::{parse, ChecksumPolicy, Protocol};
+use netscope_packet::{parse_checked, ChecksumPolicy, Packet, Protocol};
 use netscope_policy::{Action, Policy, Rule};
 use netscope_transport::{tcp, SocketProtector, UdpRelay};
 use std::{
@@ -17,6 +17,32 @@ use std::{
 };
 
 const MTU: usize = 1500;
+const OBSERVATION_BYTES: usize = 38;
+
+// Only checked header metadata crosses to Android's socket owner lookup.
+fn observation(packet: &Packet) -> [i8; OBSERVATION_BYTES] {
+    let mut bytes = [0u8; OBSERVATION_BYTES];
+    bytes[0] = match packet.protocol {
+        Protocol::Tcp => 6,
+        Protocol::Udp => 17,
+    };
+    bytes[2..4].copy_from_slice(&packet.source_port.to_be_bytes());
+    bytes[4..6].copy_from_slice(&packet.destination_port.to_be_bytes());
+    match (packet.source, packet.destination) {
+        (std::net::IpAddr::V4(source), std::net::IpAddr::V4(destination)) => {
+            bytes[1] = 4;
+            bytes[6..10].copy_from_slice(&source.octets());
+            bytes[22..26].copy_from_slice(&destination.octets());
+        }
+        (std::net::IpAddr::V6(source), std::net::IpAddr::V6(destination)) => {
+            bytes[1] = 16;
+            bytes[6..22].copy_from_slice(&source.octets());
+            bytes[22..38].copy_from_slice(&destination.octets());
+        }
+        _ => unreachable!("checked packets have one address family"),
+    }
+    bytes.map(|byte| byte as i8)
+}
 
 struct Protector(Arc<AndroidVpnProtector>);
 impl SocketProtector for Protector {
@@ -73,14 +99,11 @@ impl Session {
             .as_millis()
             .min(u128::from(tcp::MAX_TIME_MS)) as u64
     }
-    fn ingress(&mut self, packet: &[u8]) {
-        let now = self.now();
-        let Ok(metadata) = parse(packet) else {
-            return;
-        };
-        if self.outbound.decide(&metadata).action != Action::Allow {
-            return;
+    fn ingress(&mut self, packet: &[u8], metadata: &Packet) -> bool {
+        if self.outbound.decide(metadata).action != Action::Allow {
+            return false;
         }
+        let now = self.now();
         match metadata.protocol {
             Protocol::Tcp => {
                 let _ = self.tcp.ingest(packet, now);
@@ -89,6 +112,7 @@ impl Session {
                 let _ = self.udp.send(packet, now);
             }
         }
+        true
     }
     fn next(&mut self) -> Result<Option<Vec<u8>>, ()> {
         let now = self.now();
@@ -204,17 +228,31 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_forwardPacket(
     token: jlong,
     bytes: JByteArray<'_>,
     count: jint,
+    observed: JByteArray<'_>,
 ) -> jint {
     with_session(token, |session| {
         if bytes.is_null()
+            || observed.is_null()
             || !(1..=MTU as jint).contains(&count)
             || env.get_array_length(&bytes).ok()? != MTU as jint
+            || env.get_array_length(&observed).ok()? != OBSERVATION_BYTES as jint
         {
             return None;
         }
         let owned = env.convert_byte_array(&bytes).ok()?;
-        session.ingress(&owned[..count as usize]);
-        Some(0)
+        let packet = &owned[..count as usize];
+        let Ok(checked) = parse_checked(packet, ChecksumPolicy::Require) else {
+            return Some(0);
+        };
+        let metadata = checked.packet;
+        env.set_byte_array_region(&observed, 0, &observation(&metadata))
+            .ok()?;
+        // Report only the fixed profile's decision, never upstream delivery.
+        Some(if session.ingress(packet, &metadata) {
+            1
+        } else {
+            2
+        })
     })
 }
 

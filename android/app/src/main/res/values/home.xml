@@ -35,4 +35,20 @@
     <string name="notification_needed">Allow notifications to use the VPN stop control.</string>
     <string name="consent_needed">VPN permission is required to connect.</string>
     <string name="startup_rejected">Android rejected VPN startup.</string>
+
+    <item name="traffic_action" type="id" />
+    <item name="traffic_list" type="id" />
+    <string name="traffic_title">Apps</string>
+    <string name="traffic_back">Back</string>
+    <string name="traffic_scope">Outbound packets seen during this VPN session. Counts stay on this device and clear on disconnect.</string>
+    <string name="traffic_search">Search app or package</string>
+    <string name="traffic_blocked_only">Show apps with blocked packets</string>
+    <string name="traffic_off">Connect to NetScope to see app traffic here.</string>
+    <string name="traffic_old_android">App names require Android 10 or later.</string>
+    <string name="traffic_empty">Waiting for outbound traffic.</string>
+    <string name="traffic_no_match">No apps match these filters.</string>
+    <string name="traffic_unknown">Unknown app</string>
+    <string name="traffic_uid">App UID %1$d</string>
+    <string name="traffic_shared_uid">Shared app UID %1$d</string>
+    <string name="traffic_counts">%1$s · %2$d packets · %3$d profile blocks</string>
 </resources>

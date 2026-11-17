@@ -17,3 +17,5 @@ Implemented: optimized one-record expiry index, compiled precedence, checked Eng
 Classic UDP question parsing/domain policy is implemented with explicit scope in DNS_POLICY.md. Bounded concurrent transactions and independent first-send expiry are implemented. Opt-in bounded TCP DNS framing/stream policy is also implemented (TCP_DNS.md). Next DNS work: broader classic DNS interoperability, evaluated alias/rebinding policies and secure resolver/authentication designs. No encrypted-DNS visibility should be assumed.
 
 Experimental TCP relay is implemented with explicit scope in TCP_TRANSPORT.md. Next portable priorities are bounded readiness scheduling, handshake/fairness limits, richer identity/network context and bounded external configuration. APK/UI/platform integration remains paused; no device or WAN guarantees are inferred.
+
+See [platform targets](PLATFORM_TARGETS.md) for Linux, OpenWrt and DD-WRT integration boundaries. Android's application identity remains in the Android adapter.

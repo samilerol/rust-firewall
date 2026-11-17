@@ -6,7 +6,8 @@ public final class NativeCore {
     private NativeCore() {}
     public static native int inspect(byte[] packet, int length);
     static native long startForwarding(Object vpnService);
-    static native int forwardPacket(long session, byte[] packet, int length);
+    /** 0 = invalid, 1 = profile permits, 2 = profile blocks, -1 = bridge failure. */
+    static native int forwardPacket(long session, byte[] packet, int length, byte[] observation);
     static native int pollForwarding(long session, byte[] packet);
     static native int stopForwarding(long session);
     /** Dormant default-deny UDP session; no packet forwarding API. Zero is failure. */

@@ -61,9 +61,14 @@ public final class ForwardingSmoke extends Instrumentation {
             } catch (SocketTimeoutException expected) {
                 // The same fixture answered this query before VPN startup.
             }
+            phase = "application attribution and live Apps screen";
+            requireObservedApp(screen);
             phase = "restoration after Stop";
             click(screen, R.string.vpn_disconnect);
             awaitEcho(8080, null);
+            if (!DiagnosticVpnService.trafficSnapshot().isEmpty()) {
+                throw new AssertionError("Traffic counts survived Stop");
+            }
             phase = "forwarding session restart";
             click(screen, R.string.vpn_connect);
             awaitEcho(80, "10.111.0.1");
@@ -165,6 +170,41 @@ public final class ForwardingSmoke extends Instrumentation {
 
     private static void requireEcho(int port) throws IOException {
         awaitEcho(port, null);
+    }
+
+    private void requireObservedApp(Activity screen) throws IOException {
+        int uid = android.os.Process.myUid();
+        boolean found = DiagnosticVpnService.trafficSnapshot().stream().anyMatch(
+            entry -> entry.uid() == uid && entry.bytes() > 0 && entry.blocked() > 0);
+        if (!found) throw new AssertionError("Android did not attribute allowed and blocked traffic to the test app");
+
+        ActivityMonitor monitor = addMonitor(TrafficActivity.class.getName(), null, false);
+        runOnMainSync(() -> screen.findViewById(R.id.traffic_action).performClick());
+        Activity traffic = waitForMonitorWithTimeout(monitor, 5000);
+        removeMonitor(monitor);
+        if (traffic == null) throw new AssertionError("Apps screen did not open");
+        try {
+            waitForIdleSync();
+            runOnMainSync(() -> {
+                android.widget.ListView list = traffic.findViewById(R.id.traffic_list);
+                boolean listed = false;
+                for (int i = 0; i < list.getAdapter().getCount(); i++) {
+                    if (String.valueOf(list.getAdapter().getItem(i)).contains("NetScope")) listed = true;
+                }
+                if (!listed) throw new AssertionError("NetScope's observed traffic is not listed");
+            });
+            android.graphics.Bitmap screenshot = getUiAutomation().takeScreenshot();
+            if (screenshot != null) {
+                try (var output = getTargetContext().openFileOutput("netscope-apps.png", 0)) {
+                    screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output);
+                } finally {
+                    screenshot.recycle();
+                }
+            }
+        } finally {
+            runOnMainSync(traffic::finish);
+            waitForIdleSync();
+        }
     }
 
     private void click(Activity activity, int label) {

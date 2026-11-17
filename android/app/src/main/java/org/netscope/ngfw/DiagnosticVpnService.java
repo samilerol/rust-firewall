@@ -26,6 +26,12 @@ public final class DiagnosticVpnService extends VpnService {
 
     // Service callbacks and worker completion messages update this on the main thread.
     private static Status status = Status.IDLE;
+    private static volatile TrafficObservations traffic;
+
+    static java.util.List<TrafficObservations.Entry> trafficSnapshot() {
+        TrafficObservations current = traffic;
+        return current == null ? new java.util.ArrayList<>() : current.snapshot();
+    }
     private static Reader activeWorker;
     private Reader reader;
 
@@ -150,10 +156,13 @@ public final class DiagnosticVpnService extends VpnService {
         private void runForwarding() throws ErrnoException, IOException {
             long session = NativeCore.startForwarding(DiagnosticVpnService.this);
             if (session == 0) return;
+            TrafficObservations observations = new TrafficObservations(getSystemService(android.net.ConnectivityManager.class));
             try {
+                traffic = observations;
                 reportReady(Status.FORWARDING);
                 byte[] ingress = new byte[1500];
                 byte[] egress = new byte[1500];
+                byte[] metadata = new byte[TrafficObservations.METADATA_BYTES];
                 int pending = 0;
                 StructPollfd poll = new StructPollfd();
                 poll.fd = descriptor.getFileDescriptor();
@@ -167,7 +176,10 @@ public final class DiagnosticVpnService extends VpnService {
                     if ((poll.revents & OsConstants.POLLIN) != 0) {
                         try {
                             int n = Os.read(poll.fd, ingress, 0, ingress.length);
-                            if (n <= 0 || NativeCore.forwardPacket(session, ingress, n) < 0) break;
+                            if (n <= 0) break;
+                            int result = NativeCore.forwardPacket(session, ingress, n, metadata);
+                            if (result < 0) break;
+                            if (result > 0) observations.observe(metadata, n, result == 2);
                         } catch (ErrnoException error) {
                             if (error.errno != OsConstants.EAGAIN && error.errno != OsConstants.EINTR) throw error;
                         }
@@ -187,6 +199,7 @@ public final class DiagnosticVpnService extends VpnService {
                     }
                 }
             } finally {
+                traffic = null;
                 NativeCore.stopForwarding(session);
             }
         }

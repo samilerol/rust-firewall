@@ -27,11 +27,11 @@ public final class MainActivity extends Activity {
     private static final int NOTIFICATIONS = 2;
     private static final int CONSENT = 3;
     private static final int DIAGNOSTIC_CONSENT = 4;
-    private static final int BACKGROUND = 0xff0c1420;
-    private static final int SURFACE = 0xff121e2c;
-    private static final int BORDER = 0xff26364a;
-    private static final int TEXT = 0xfff1f6fc;
-    private static final int MUTED = 0xffa8b9cd;
+    static final int BACKGROUND = 0xff0c1420;
+    static final int SURFACE = 0xff121e2c;
+    static final int BORDER = 0xff26364a;
+    static final int TEXT = 0xfff1f6fc;
+    static final int MUTED = 0xffa8b9cd;
     private static final int MINT = 0xff59e6ca;
     private static final int AMBER = 0xffffc480;
 
@@ -59,34 +59,18 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setBackgroundColor(BACKGROUND);
-        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
-            int top;
-            int bottom;
-            int left;
-            int right;
-            if (Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets safe = insets.getInsets(
-                    android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
-                top = safe.top;
-                bottom = safe.bottom;
-                left = safe.left;
-                right = safe.right;
-            } else {
-                top = insets.getSystemWindowInsetTop();
-                bottom = insets.getSystemWindowInsetBottom();
-                left = insets.getSystemWindowInsetLeft();
-                right = insets.getSystemWindowInsetRight();
-            }
-            if (Build.VERSION.SDK_INT >= 35 && getApplicationInfo().targetSdkVersion >= 35) {
-                view.setPadding(left, top, right, bottom);
-            }
-            return insets;
-        });
+        applySafeInsets(scroll);
         LinearLayout body = column();
         body.setPadding(dp(22), dp(20), dp(22), dp(18));
         scroll.addView(body);
         addHeader(body);
         addConnection(body);
+        Button apps = button();
+        apps.setId(R.id.traffic_action);
+        apps.setText(R.string.traffic_title);
+        styleButton(apps, SURFACE, TEXT, BORDER);
+        apps.setOnClickListener(view -> startActivity(new Intent(this, TrafficActivity.class)));
+        add(body, apps, 12);
         addProfile(body);
         setContentView(scroll);
         action.setOnClickListener(view -> {
@@ -296,6 +280,16 @@ public final class MainActivity extends Activity {
     @Override protected void onStop() {
         handler.removeCallbacks(refresh);
         super.onStop();
+    }
+
+    static void applySafeInsets(View view) {
+        if (Build.VERSION.SDK_INT < 35) return;
+        view.setOnApplyWindowInsetsListener((root, insets) -> {
+            android.graphics.Insets safe = insets.getInsets(
+                android.view.WindowInsets.Type.systemBars() | android.view.WindowInsets.Type.displayCutout());
+            root.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+            return insets;
+        });
     }
 
     private LinearLayout column() {

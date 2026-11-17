@@ -26,4 +26,18 @@
     <string name="notification_needed">VPN durdurma düğmesini kullanmak için bildirimlere izin ver.</string>
     <string name="consent_needed">Bağlanmak için VPN izni gerekiyor.</string>
     <string name="startup_rejected">Android VPN’i başlatamadı.</string>
+
+    <string name="traffic_title">Uygulamalar</string>
+    <string name="traffic_back">Geri</string>
+    <string name="traffic_scope">Bu VPN oturumunda görülen giden paketler. Sayaçlar cihazda kalır, bağlantı kesilince temizlenir.</string>
+    <string name="traffic_search">Uygulama veya paket ara</string>
+    <string name="traffic_blocked_only">Engellenen paketi olan uygulamalar</string>
+    <string name="traffic_off">Uygulama trafiğini görmek için NetScope’a bağlan.</string>
+    <string name="traffic_old_android">Uygulama adları için Android 10 veya üzeri gerekir.</string>
+    <string name="traffic_empty">Giden trafik bekleniyor.</string>
+    <string name="traffic_no_match">Bu filtrelere uyan uygulama yok.</string>
+    <string name="traffic_unknown">Bilinmeyen uygulama</string>
+    <string name="traffic_uid">Uygulama UID %1$d</string>
+    <string name="traffic_shared_uid">Ortak uygulama UID %1$d</string>
+    <string name="traffic_counts">%1$s · %2$d paket · profilin engellediği %3$d</string>
 </resources>
