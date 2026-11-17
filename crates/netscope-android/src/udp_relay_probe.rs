@@ -13,7 +13,7 @@ use netscope_policy::{Action, Cidr, Policy, Rule};
 use netscope_transport::{RelayError, UdpRelay};
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     panic::{catch_unwind, AssertUnwindSafe},
     thread,
     time::Duration,
@@ -25,12 +25,12 @@ const CLIENT_PORT: u16 = 41_234;
 const MAX_POLLS: u64 = 80;
 const POLL_DELAY_MS: u64 = 10;
 
-fn allow_rule(source: Ipv4Addr, destination: Ipv4Addr, from: u16, to: u16) -> Rule {
+fn allow_rule(source: IpAddr, destination: IpAddr, from: u16, to: u16) -> Rule {
     Rule {
         priority: 0,
         action: Action::Allow,
-        source: Some(Cidr::new(IpAddr::V4(source), 32).expect("valid IPv4 CIDR")),
-        destination: Some(Cidr::new(IpAddr::V4(destination), 32).expect("valid IPv4 CIDR")),
+        source: Some(Cidr::new(source, if source.is_ipv4() { 32 } else { 128 }).expect("valid CIDR")),
+        destination: Some(Cidr::new(destination, if destination.is_ipv4() { 32 } else { 128 }).expect("valid CIDR")),
         protocol: Some(Protocol::Udp),
         source_port: Some(from..=from),
         destination_port: Some(to..=to),
@@ -45,6 +45,7 @@ fn probe(
     queue: JObject<'_>,
     destination_port: jint,
     allow_inbound: bool,
+    ipv6: bool,
 ) -> jint {
     if service.is_null() || queue.is_null() || !(1..=65535).contains(&destination_port) {
         return FAILED;
@@ -52,8 +53,14 @@ fn probe(
     let Ok(destination_port) = u16::try_from(destination_port) else {
         return FAILED;
     };
-    let client = Ipv4Addr::new(10, 111, 0, 2);
-    let localhost = Ipv4Addr::LOCALHOST;
+    let (client, localhost) = if ipv6 {
+        (
+            IpAddr::V6("fd12:3456:789a::2".parse::<Ipv6Addr>().expect("static IPv6")),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        )
+    } else {
+        (IpAddr::V4(Ipv4Addr::new(10, 111, 0, 2)), IpAddr::V4(Ipv4Addr::LOCALHOST))
+    };
     let mut rules = vec![allow_rule(client, localhost, CLIENT_PORT, destination_port)];
     if allow_inbound {
         rules.push(allow_rule(localhost, client, destination_port, CLIENT_PORT));
@@ -76,8 +83,8 @@ fn probe(
     ) else {
         return FAILED;
     };
-    let source = SocketAddr::new(IpAddr::V4(client), CLIENT_PORT);
-    let destination = SocketAddr::new(IpAddr::V4(localhost), destination_port);
+    let source = SocketAddr::new(client, CLIENT_PORT);
+    let destination = SocketAddr::new(localhost, destination_port);
     let Ok(datagram) = udp::encode(source, destination, b"netscope-udp-loopback") else {
         return FAILED;
     };
@@ -139,6 +146,7 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_probeUdpRelayLoopback(
     queue: JObject<'_>,
     destination_port: jint,
     allow_inbound: jni::sys::jboolean,
+    ipv6: jni::sys::jboolean,
 ) -> jint {
     catch_unwind(AssertUnwindSafe(|| {
         probe(
@@ -147,6 +155,7 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_probeUdpRelayLoopback(
             queue,
             destination_port,
             allow_inbound != 0,
+            ipv6 != 0,
         )
     }))
     .unwrap_or(FAILED)
