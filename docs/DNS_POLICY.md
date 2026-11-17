@@ -4,7 +4,7 @@
 
 `netscope-dns` is a std-only/internal-workspace library: bounded DNS wire parsing, canonical ASCII question names and deterministic exact/subdomain policy. `UdpRelay::set_dns_filter(Some(policy), ports)` explicitly enables it on up to 32 distinct nonzero destination ports. No DNS filter is active in a plain relay constructor. An allow from the domain policy never overrides the packet/IP/current inbound policy.
 
-This is **question-based classic UDP DNS filtering**, not a DNS resolver, cache, DNSSEC/TSIG validator or comprehensive domain-access control. No upstream resolver is selected or forced. Original DNS payloads are forwarded without modification when permitted. Blocked/invalid queries return errors and are not sent; no synthetic NXDOMAIN/REFUSED is generated.
+This document describes **question-based classic UDP DNS filtering**; TCP_DNS.md describes the separately activated TCP stream guard. Neither is a DNS resolver, cache, DNSSEC/TSIG validator or comprehensive domain-access control. No upstream resolver is selected or forced. Original DNS payloads are forwarded without modification when permitted. Blocked/invalid queries return errors and are not sent; no synthetic NXDOMAIN/REFUSED is generated.
 
 ## Wire/input limits
 
@@ -37,7 +37,7 @@ Flow expiry, network reset, valid IP-policy changes and valid DNS-filter changes
 ## Boundaries and limitations
 
 - No CNAME/HTTPS/SVCB alias-chain blocking, response address/CIDR pinning, DNS rebinding defense or IP cache derived from DNS. Valid answer target names may be parsed for structural safety but domain blocking is based on the question only.
-- No encrypted DoH/DoT/DoQ inspection, TCP DNS parsing, resolver-authentication or certificate handling. DNS on unselected ports and direct IP access are outside this filter; ordinary packet policy remains in force. Do not claim this prevents all DNS bypass or DNS leaks.
+- No encrypted DoH/DoT/DoQ inspection, resolver-authentication or certificate handling. Classic TCP parsing requires the separate explicit TCP_DNS.md guard. DNS on unselected ports and direct IP access are outside this filter; ordinary packet policy remains in force. Do not claim this prevents all DNS bypass or DNS leaks.
 - Connected peers, transaction matching and checksums are not cryptographic authentication. DNSSEC/AD bits, Cookies and signatures are not verified. Original payloads remain unchanged so a client's own DNS validation can still apply.
 - Pending question names are local ephemeral state only; no DNS history, logging, telemetry, persistence or cloud service is added. The library does not claim a universal OS memory byte budget.
 - APK/UI remains paused. Android diagnostic is not integrated with the relay/filter, and no device/leak/battery claim follows from host loopback tests.
@@ -48,4 +48,4 @@ Flow expiry, network reset, valid IP-policy changes and valid DNS-filter changes
 
 The benchmark harness now has 37 cases (six DNS cases added): query parsing, compressed response parsing and hit/miss domain policies with 64/4096 rules. Historical comparison applies only to the 31 cases shared with its reference commit; new DNS cases establish an initial baseline, not speed claims. See actual PR Actions runs for hosted results; creating a workflow is not passing evidence.
 
-Generic TCP relay now exists independently (TCP_TRANSPORT.md), but this DNS guard is still UDP-only. Configurations requiring classic DNS-domain enforcement must explicitly deny TCP/53 until a TCP stream DNS guard is implemented. Do not infer encrypted-DNS or cross-protocol domain coverage from a UDP rule.
+The UDP API remains UDP-only. A separate TCP DNS stream guard now exists (TCP_DNS.md); activate it independently or deny TCP/53 in packet policy when classic DNS-domain enforcement is required. A UDP rule alone never grants cross-protocol coverage. Neither guard inspects encrypted DNS.

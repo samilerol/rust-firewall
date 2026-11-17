@@ -61,6 +61,10 @@ pub enum DnsError {
     /// The same transaction ID is already waiting for a different question.
     Busy,
     Capacity,
+    /// Invalid TCP DNS two-byte message length.
+    FrameLength,
+    /// A TCP half-close interrupted a DNS frame.
+    IncompleteFrame,
     Unsolicited,
     Mismatched,
 }

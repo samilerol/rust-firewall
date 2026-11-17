@@ -667,3 +667,6 @@ fn nonunicast_source_and_reserved_tcp_bits_do_not_open_sockets() {
         io::ErrorKind::WouldBlock
     );
 }
+
+#[path = "dns_tests.rs"]
+mod dns_tests;
