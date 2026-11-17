@@ -7,6 +7,8 @@ public final class NativeCore {
     public static native int inspect(byte[] packet, int length);
     /** Dormant default-deny UDP session; no packet forwarding API. Zero is failure. */
     public static native long startUdpSession(Object vpnService);
+    /** Returns 1 for valid UDP dropped, 0 for other packets dropped, -1 on session error. Never allows. */
+    public static native int inspectUdpSession(long sessionId, byte[] packet, int length);
     public static native int stopUdpSession(long sessionId);
     public static native int resetUdpSessionNetwork(long sessionId);
     /** Opt-in probe only: protection of Rust-owned sockets; never forwards traffic. */

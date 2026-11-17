@@ -1,13 +1,14 @@
 //! Fail-closed JNI lifecycle for a single dormant Android UDP session.
 //!
-//! No packet ingress, rule loading, upstream traffic, or TUN writing is exposed.
-//! The session exists to bind Rust resource lifetime to VpnService teardown.
-use crate::{udp_session::UdpSession, vpn_protector::AndroidVpnProtector};
+//! Ingress is a dry-run only: every datagram is discarded, even if valid.
+//! No rule loading, upstream traffic, or TUN writing is exposed.
+use crate::{udp_session::UdpSession, vpn_protector::AndroidVpnProtector, MAX_DATAGRAM};
 use jni::{
-    objects::{JClass, JObject},
+    objects::{JByteArray, JClass, JObject},
     sys::{jint, jlong},
     JNIEnv,
 };
+use netscope_packet::{parse_checked, ChecksumPolicy, Protocol};
 use netscope_transport::SocketProtector;
 use std::{
     io,
@@ -105,6 +106,57 @@ fn reset(id: jlong) -> jint {
         Ok(()) => SUCCESS,
         Err(_) => FAILURE,
     }
+}
+
+/// Classify one bounded TUN datagram against a live session without admitting
+/// any flows or forwarding. 1 = valid UDP *dropped*, 0 = other/invalid dropped,
+/// -1 = bridge/expired-session failure. There is deliberately no allow result.
+fn inspect_udp(env: &mut JNIEnv<'_>, id: jlong, bytes: JByteArray<'_>, length: jint) -> jint {
+    if id <= 0 || !(1..=MAX_DATAGRAM as jint).contains(&length) {
+        return FAILURE;
+    }
+    let Ok(capacity) = env.get_array_length(&bytes) else {
+        return FAILURE;
+    };
+    if capacity < length || capacity > MAX_DATAGRAM as jint {
+        return FAILURE;
+    }
+    let Ok(mut owned) = env.convert_byte_array(&bytes) else {
+        return FAILURE;
+    };
+    owned.truncate(length as usize);
+
+    // Serialize with stop/reset. No socket opening or flow admission occurs.
+    let Ok(registry) = REGISTRY.lock() else {
+        return FAILURE;
+    };
+    let Some(session) = registry.session.as_ref().filter(|s| s.id == id) else {
+        return FAILURE;
+    };
+    if !session.relay.is_active() {
+        return FAILURE;
+    }
+    match parse_checked(&owned, ChecksumPolicy::Require) {
+        Ok(packet) if packet.packet.protocol == Protocol::Udp => 1,
+        _ => 0,
+    }
+}
+
+/// TUN ingress dry-run. Both 0 and 1 mean DROP; only -1 requires teardown.
+/// This is never a packet-admission or forwarding interface.
+#[allow(unsafe_code)]
+#[no_mangle]
+pub extern "system" fn Java_org_netscope_ngfw_NativeCore_inspectUdpSession(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    id: jlong,
+    bytes: JByteArray<'_>,
+    length: jint,
+) -> jint {
+    catch_unwind(AssertUnwindSafe(|| {
+        inspect_udp(&mut env, id, bytes, length)
+    }))
+    .unwrap_or(FAILURE)
 }
 
 // SAFETY REVIEW: JNI exported symbols only. No pointer handling, no native

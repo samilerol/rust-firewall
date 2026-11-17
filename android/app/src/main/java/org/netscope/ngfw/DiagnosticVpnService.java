@@ -23,7 +23,7 @@ public final class DiagnosticVpnService extends VpnService {
     private static final String CHANNEL = "diagnostic-vpn";
     private Reader reader;
     // Dormant native default-deny context, never used by the diagnostic packet loop.
-    private long udpSessionId;
+    private volatile long udpSessionId;
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         if (intent == null || !START.equals(intent.getAction())) { shutdown(); stopSelf(); return START_NOT_STICKY; }
         if (reader != null) return START_NOT_STICKY;
@@ -92,7 +92,9 @@ public final class DiagnosticVpnService extends VpnService {
                     if (count <= 0) break;
                     int result = NativeCore.inspect(buffer, count);
                     if (result < 0) break;
-                    // Both supported-denied and invalid input are discarded. Never write/forward.
+                    int udpResult = NativeCore.inspectUdpSession(udpSessionId, buffer, count);
+                    if (udpResult < 0) break;
+                    // 0 and 1 both mean DROP. No TUN write, socket send or forward.
                 }
             } catch (IOException | ErrnoException | RuntimeException | LinkageError error) {
                 // No payload/address logging. Any bridge/I/O failure ends this diagnostic session.
