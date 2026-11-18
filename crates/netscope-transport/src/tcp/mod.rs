@@ -576,6 +576,50 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             })
         })
     }
+    /// Block up to `max_wait` until an upstream stream has the readiness it declared interest
+    /// in or time-driven work is due (`next_wakeup`), then return the flows to pass to
+    /// `poll_ready`. Errors/hangups count as ready so the pump observes them. A signal
+    /// interruption returns an empty list. The wait never outlasts the relay's own deadlines,
+    /// and returns at once when client input is unprocessed. Uses `poll(2)` through a safe
+    /// wrapper, so cost grows linearly with flows; this is not an epoll registration.
+    #[cfg(unix)]
+    pub fn wait_ready(&mut self, now: u64, max_wait: Duration) -> Result<Vec<FlowId>, Error> {
+        use rustix::event::{poll, PollFd, PollFlags, Timespec};
+        self.maintain(now)?;
+        let wait = self.next_wakeup(now).map_or(max_wait, |due| {
+            max_wait.min(Duration::from_millis(due - now))
+        });
+        let mut ids = Vec::new();
+        let mut fds = Vec::new();
+        for (id, flow) in &self.flows {
+            let interest = flow.interest();
+            let Some(stream) = flow.upstream.as_ref() else {
+                continue;
+            };
+            let mut events = PollFlags::empty();
+            events.set(PollFlags::IN, interest.readable);
+            events.set(PollFlags::OUT, interest.writable);
+            if !events.is_empty() {
+                ids.push(*id);
+                fds.push(PollFd::new(stream, events));
+            }
+        }
+        let timeout = Timespec {
+            tv_sec: wait.as_secs().min(i64::MAX as u64) as i64,
+            tv_nsec: i64::from(wait.subsec_nanos()),
+        };
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => return Ok(Vec::new()),
+            Err(error) => return Err(Error::Io(error.into())),
+        }
+        Ok(fds
+            .iter()
+            .zip(ids)
+            .filter(|(fd, _)| !fd.revents().is_empty())
+            .map(|(_, id)| id)
+            .collect())
+    }
     /// Earliest absolute time (ms) at which `poll_ready` has time-driven work: idle expiry,
     /// connect deadline or a stack timer. `Some(now)` when new client input is unprocessed and
     /// `None` when only fd readiness or new input can make progress. Flows whose output queue

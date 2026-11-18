@@ -151,7 +151,16 @@ impl Client {
         report
     }
 }
-fn echo(address: &str, payload: Vec<u8>, drop_synack: bool, readiness: bool) {
+#[derive(Clone, Copy, PartialEq)]
+enum Drive {
+    /// Full scan every pass.
+    Poll,
+    /// poll_ready with every flow that declares interest (over-approximated readiness).
+    Interest,
+    /// poll_ready with the flows a real poll(2) wait reports.
+    Wait,
+}
+fn echo(address: &str, payload: Vec<u8>, drop_synack: bool, drive: Drive) {
     let listener = TcpListener::bind(address).unwrap();
     let endpoint = listener.local_addr().unwrap();
     let expected = payload.clone();
@@ -186,14 +195,20 @@ fn echo(address: &str, payload: Vec<u8>, drop_synack: bool, readiness: bool) {
         while let Some(bytes) = client.device.tx.pop_front() {
             relay.ingest(&bytes, now).unwrap();
         }
-        if readiness {
-            // Over-approximate the event loop: every flow that declares interest is "ready".
+        match drive {
+            Drive::Poll => {
+                relay.poll(now).unwrap();
+            }
             // The echo can only finish if the declared interest never omits a flow that needs
             // pumping; the loop reaps closed flows through poll_ready as well.
-            let ready: Vec<FlowId> = relay.upstream_waits().map(|wait| wait.flow).collect();
-            relay.poll_ready(now, &ready).unwrap();
-        } else {
-            relay.poll(now).unwrap();
+            Drive::Interest => {
+                let ready: Vec<FlowId> = relay.upstream_waits().map(|wait| wait.flow).collect();
+                relay.poll_ready(now, &ready).unwrap();
+            }
+            Drive::Wait => {
+                let ready = relay.wait_ready(now, Duration::from_millis(2)).unwrap();
+                relay.poll_ready(now, &ready).unwrap();
+            }
         }
         while let Some(bytes) = relay.next_packet(now).unwrap() {
             assert!(parse_checked(&bytes, ChecksumPolicy::Require).is_ok());
@@ -241,7 +256,7 @@ fn ipv4_tcp_echo_half_close_and_partial_buffering() {
         "127.0.0.1:0",
         (0..100_000).map(|i| (i % 251) as u8).collect(),
         false,
-        false,
+        Drive::Poll,
     );
 }
 #[test]
@@ -250,16 +265,30 @@ fn ipv4_tcp_echo_driven_only_by_declared_readiness() {
         "127.0.0.1:0",
         (0..100_000).map(|i| (i % 251) as u8).collect(),
         false,
-        true,
+        Drive::Interest,
+    );
+}
+#[test]
+fn ipv4_tcp_echo_driven_by_a_real_poll_wait() {
+    echo(
+        "127.0.0.1:0",
+        (0..100_000).map(|i| (i % 251) as u8).collect(),
+        false,
+        Drive::Wait,
     );
 }
 #[test]
 fn ipv6_tcp_echo_half_close() {
-    echo("[::1]:0", b"IPv6 real TCP echo".repeat(100), false, false);
+    echo(
+        "[::1]:0",
+        b"IPv6 real TCP echo".repeat(100),
+        false,
+        Drive::Poll,
+    );
 }
 #[test]
 fn dropped_synack_retransmits_without_duplicate_upstream_socket() {
-    echo("127.0.0.1:0", b"retransmission".to_vec(), true, false);
+    echo("127.0.0.1:0", b"retransmission".to_vec(), true, Drive::Poll);
 }
 #[test]
 fn invalid_denied_or_unprotected_syn_never_connects() {
@@ -1037,4 +1066,53 @@ fn next_wakeup_reports_time_work_and_ignores_backpressured_flows() {
     full.poll(1).unwrap();
     assert!(!full.flows.values().next().unwrap().device.available());
     assert_eq!(full.next_wakeup(1), Some(30_000));
+}
+#[test]
+fn wait_ready_blocks_until_upstream_data_or_the_cap_and_never_past_deadlines() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (mut client, mut r) = established(&listener);
+    client.step(&mut r, 4);
+    r.poll(5).unwrap(); // clear dirty marks
+    let (mut server, _) = listener.accept().unwrap();
+    // Nothing to read: the wait runs to the caller's cap, not to the 30 s idle expiry.
+    let started = Wall::now();
+    assert!(r
+        .wait_ready(5, Duration::from_millis(60))
+        .unwrap()
+        .is_empty());
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_millis(50),
+        "returned early: {waited:?}"
+    );
+    assert!(waited < Duration::from_secs(2), "overslept: {waited:?}");
+    // Upstream data arrives while waiting: the flow is reported long before the cap.
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        server.write_all(b"ping").unwrap();
+        server
+    });
+    let started = Wall::now();
+    let ready = r.wait_ready(5, Duration::from_secs(5)).unwrap();
+    assert_eq!(ready.len(), 1);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    r.poll_ready(5, &ready).unwrap();
+    assert_eq!(stack_send_queue(&r, &ready[0]), 4);
+    drop(writer.join().unwrap());
+    // Unprocessed client input makes the wait return immediately.
+    let flow = ready[0];
+    r.flows.get_mut(&flow).unwrap().dirty = true;
+    let started = Wall::now();
+    r.wait_ready(5, Duration::from_secs(5)).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    // The relay's own deadline bounds the wait even with a huge cap.
+    r.flows.get_mut(&flow).unwrap().dirty = false;
+    let wake = r.next_wakeup(5).unwrap();
+    let started = Wall::now();
+    r.wait_ready(wake.saturating_sub(40), Duration::from_secs(60))
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "ignored next_wakeup"
+    );
 }
