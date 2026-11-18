@@ -40,6 +40,8 @@ jobs:
           git diff --exit-code -- crates/netscope-packet/tests/fixtures
       - name: Run check
         shell: bash
+        env:
+          NETSCOPE_REQUIRE_IPV6: "1"
         run: |
           case '${{ matrix.check }}' in
             fmt) cargo +stable fmt --check && cargo +stable fmt --manifest-path fuzz/Cargo.toml --check ;;
@@ -56,3 +58,5 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install 1.85.0 --profile minimal
       - run: cargo +1.85.0 test --workspace --locked
+        env:
+          NETSCOPE_REQUIRE_IPV6: "1"

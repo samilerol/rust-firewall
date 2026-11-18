@@ -114,6 +114,12 @@ impl Tracker {
         self.order.insert((now, id));
         Ok(flow)
     }
+    /// Tick at which the oldest observation expires, or None when no flow is tracked.
+    pub fn next_expiry(&self) -> Option<u64> {
+        self.order
+            .first()
+            .map(|(seen, _)| seen.saturating_add(self.timeout))
+    }
     /// Remove an observation and its one expiry-index entry.
     pub fn remove(&mut self, id: &FlowId) -> Option<Observation> {
         let flow = self.flows.remove(id)?;
@@ -173,6 +179,20 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t.observe(flow(1), 14), Err(TrackError::ClockReversed));
         assert_eq!(t.get(&flow(2)).unwrap().last_seen, 15);
+    }
+    #[test]
+    fn next_expiry_tracks_the_oldest_observation() {
+        let mut t = Tracker::new(2, 10);
+        assert_eq!(t.next_expiry(), None);
+        t.observe(flow(1), 3).unwrap();
+        t.observe(flow(2), 5).unwrap();
+        assert_eq!(t.next_expiry(), Some(13));
+        t.observe(flow(1), 8).unwrap(); // refresh moves flow 1 behind flow 2
+        assert_eq!(t.next_expiry(), Some(15));
+        t.remove(&flow(2));
+        assert_eq!(t.next_expiry(), Some(18));
+        t.clear();
+        assert_eq!(t.next_expiry(), None);
     }
     #[test]
     fn zero_limits_and_large_timestamps() {

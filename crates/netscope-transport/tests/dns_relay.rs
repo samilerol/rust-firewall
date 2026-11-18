@@ -3,7 +3,7 @@ use netscope_dns::{DomainName, DomainPolicy, Match, Rule};
 use netscope_engine::{Config, DropReason};
 use netscope_packet::{udp, ChecksumPolicy};
 use netscope_policy::{Action, Policy};
-use netscope_transport::{DnsError, RelayError, SocketProtector, UdpRelay};
+use netscope_transport::{DnsError, DnsLimits, RelayError, SocketProtector, UdpRelay};
 use std::{
     io,
     net::{SocketAddr, UdpSocket},
@@ -80,9 +80,12 @@ fn response(mut b: Vec<u8>) -> Vec<u8> {
     b
 }
 fn receive(r: &mut UdpRelay<Protector>, flow: FlowId) -> Result<Vec<u8>, RelayError> {
+    receive_at(r, flow, 1)
+}
+fn receive_at(r: &mut UdpRelay<Protector>, flow: FlowId, now: u64) -> Result<Vec<u8>, RelayError> {
     let until = Instant::now() + Duration::from_secs(2);
     loop {
-        match r.receive(flow, 1) {
+        match r.receive(flow, now) {
             Err(RelayError::Io(e))
                 if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < until =>
             {
@@ -91,6 +94,12 @@ fn receive(r: &mut UdpRelay<Protector>, flow: FlowId) -> Result<Vec<u8>, RelayEr
             value => return value,
         }
     }
+}
+/// IPv6 loopback may be missing in containers. CI sets NETSCOPE_REQUIRE_IPV6 so a missing
+/// loopback there fails the test instead of silently skipping it.
+fn ipv6_loopback_available() -> bool {
+    std::env::var_os("NETSCOPE_REQUIRE_IPV6").is_some()
+        || std::net::UdpSocket::bind("[::1]:0").is_ok()
 }
 #[test]
 fn blocked_and_malformed_dns_are_not_sent_or_allocated() {
@@ -121,6 +130,10 @@ fn blocked_and_malformed_dns_are_not_sent_or_allocated() {
 }
 #[test]
 fn ipv4_and_ipv6_dns_round_trip_consumes_exact_pending_question() {
+    if !ipv6_loopback_available() {
+        eprintln!("skipped: no IPv6 loopback in this environment (set NETSCOPE_REQUIRE_IPV6=1 to fail instead)");
+        return;
+    }
     for address in ["127.0.0.1:0", "[::1]:0"] {
         let s = server(address);
         let endpoint = s.local_addr().unwrap();
@@ -167,15 +180,19 @@ fn wrong_id_wrong_question_and_query_as_response_are_rejected() {
         assert!(matches!(
             receive(&mut r, sent.flow),
             Err(RelayError::Dns(
-                DnsError::Mismatched | DnsError::Malformed(_)
+                DnsError::Unsolicited | DnsError::Mismatched | DnsError::Malformed(_)
             ))
         ));
+        assert_eq!(r.pending_dns_count(), 1);
+        assert_eq!(r.flow_count(), 1);
+        // A bad answer must not destroy the still-valid transaction.
+        s.send_to(&response(q), peer).unwrap();
+        assert!(receive(&mut r, sent.flow).is_ok());
         assert_eq!(r.pending_dns_count(), 0);
-        assert_eq!(r.flow_count(), 0);
     }
 }
 #[test]
-fn retransmission_is_bounded_and_distinct_concurrent_question_is_busy() {
+fn retransmission_is_bounded_and_same_id_different_question_is_busy() {
     let s = server("127.0.0.1:0");
     let endpoint = s.local_addr().unwrap();
     let (mut r, calls) = relay(endpoint, Action::Allow);
@@ -184,7 +201,7 @@ fn retransmission_is_bounded_and_distinct_concurrent_question_is_busy() {
     r.send(&datagram(endpoint, &q), 0).unwrap();
     assert_eq!(r.pending_dns_count(), 1);
     assert!(matches!(
-        r.send(&datagram(endpoint, &query("safe.example", 2)), 0),
+        r.send(&datagram(endpoint, &query("different.example", 1)), 0),
         Err(RelayError::Dns(DnsError::Busy))
     ));
     assert_eq!(r.flow_count(), 1);
@@ -254,5 +271,216 @@ fn a_second_unsolicited_answer_cannot_reuse_consumed_transaction() {
         receive(&mut r, sent.flow),
         Err(RelayError::Dns(DnsError::Unsolicited))
     ));
+    assert_eq!(r.flow_count(), 1);
+    assert_eq!(r.pending_dns_count(), 0);
+}
+
+#[test]
+fn concurrent_ipv4_ipv6_queries_share_socket_and_complete_out_of_order() {
+    if !ipv6_loopback_available() {
+        eprintln!("skipped: no IPv6 loopback in this environment (set NETSCOPE_REQUIRE_IPV6=1 to fail instead)");
+        return;
+    }
+    for address in ["127.0.0.1:0", "[::1]:0"] {
+        let s = server(address);
+        let endpoint = s.local_addr().unwrap();
+        let (mut r, calls) = relay(endpoint, Action::Allow);
+        let a = query("first.example", 1);
+        let b = query("second.example", 2);
+        let sent = r.send(&datagram(endpoint, &a), 0).unwrap();
+        assert_eq!(r.send(&datagram(endpoint, &b), 0).unwrap().flow, sent.flow);
+        assert_eq!(r.pending_dns_count(), 2);
+        let mut buffer = [0; 1024];
+        let (_, first_peer) = s.recv_from(&mut buffer).unwrap();
+        let (_, second_peer) = s.recv_from(&mut buffer).unwrap();
+        assert_eq!(first_peer, second_peer);
+        let offset = if endpoint.is_ipv4() { 28 } else { 48 };
+        s.send_to(&response(b.clone()), first_peer).unwrap();
+        assert_eq!(&receive(&mut r, sent.flow).unwrap()[offset..], response(b));
+        assert_eq!(r.pending_dns_count(), 1);
+        s.send_to(&response(a.clone()), first_peer).unwrap();
+        assert_eq!(&receive(&mut r, sent.flow).unwrap()[offset..], response(a));
+        assert_eq!(r.pending_dns_count(), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn independent_deadlines_survive_retries_late_answers_and_clock_reversal() {
+    let s = server("127.0.0.1:0");
+    let endpoint = s.local_addr().unwrap();
+    let (mut r, _) = relay(endpoint, Action::Allow);
+    r.set_dns_limits(DnsLimits {
+        max_pending_per_flow: 2,
+        max_pending_total: 2,
+        query_timeout: 3,
+    })
+    .unwrap();
+    let a = query("first.example", 1);
+    let b = query("second.example", 2);
+    let sent = r.send(&datagram(endpoint, &a), 0).unwrap();
+    let mut buffer = [0; 1024];
+    let (_, peer) = s.recv_from(&mut buffer).unwrap();
+    r.send(&datagram(endpoint, &a), 2).unwrap(); // retry must not extend first deadline
+    r.send(&datagram(endpoint, &b), 2).unwrap();
+    assert_eq!(r.pending_dns_count(), 2);
+    assert_eq!(r.expire(3).unwrap(), 0); // flow is live, only query A expires
+    assert_eq!(r.pending_dns_count(), 1);
+    assert!(matches!(
+        r.expire(2),
+        Err(RelayError::Dropped(DropReason::ClockReversed))
+    ));
+    assert_eq!(r.pending_dns_count(), 1);
+    s.send_to(&response(a.clone()), peer).unwrap();
+    assert!(matches!(
+        receive_at(&mut r, sent.flow, 3),
+        Err(RelayError::Dns(DnsError::Unsolicited))
+    ));
+    assert_eq!(r.pending_dns_count(), 1);
+    // Reusing an expired ID with a new question must not accept its old response.
+    let replacement = query("replacement.example", 1);
+    r.send(&datagram(endpoint, &replacement), 3).unwrap();
+    s.send_to(&response(a), peer).unwrap();
+    assert!(matches!(
+        receive_at(&mut r, sent.flow, 3),
+        Err(RelayError::Dns(DnsError::Mismatched))
+    ));
+    assert_eq!(r.pending_dns_count(), 2);
+    s.send_to(&response(b), peer).unwrap();
+    assert!(receive_at(&mut r, sent.flow, 3).is_ok());
+    assert_eq!(r.pending_dns_count(), 1);
+    r.expire(6).unwrap();
+    assert_eq!(r.pending_dns_count(), 0);
+    assert_eq!(r.flow_count(), 1);
+}
+
+#[test]
+fn per_flow_global_caps_and_atomic_limit_configuration() {
+    let s = server("127.0.0.1:0");
+    let endpoint = s.local_addr().unwrap();
+    let (mut r, calls) = relay(endpoint, Action::Allow);
+    let limits = DnsLimits {
+        max_pending_per_flow: 1,
+        max_pending_total: 2,
+        query_timeout: 3,
+    };
+    r.set_dns_limits(limits).unwrap();
+    let packet = |port, id| {
+        udp::encode(
+            format!("192.0.2.1:{port}").parse().unwrap(),
+            endpoint,
+            &query("safe.example", id),
+        )
+        .unwrap()
+    };
+    let first = r.send(&packet(1234, 1), 0).unwrap();
+    assert!(matches!(
+        r.send(&packet(1234, 2), 0),
+        Err(RelayError::Dns(DnsError::Capacity))
+    ));
+    r.send(&packet(1235, 1), 0).unwrap();
+    assert!(matches!(
+        r.send(&packet(1236, 1), 0),
+        Err(RelayError::Dns(DnsError::Capacity))
+    ));
+    // Retries at capacity do not allocate another slot.
+    r.send(&packet(1234, 1), 1).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(r.flow_count(), 2);
+    assert_eq!(r.pending_dns_count(), 2);
+    for bad in [
+        DnsLimits {
+            max_pending_per_flow: 0,
+            ..limits
+        },
+        DnsLimits {
+            max_pending_per_flow: 65,
+            ..limits
+        },
+        DnsLimits {
+            max_pending_total: 0,
+            ..limits
+        },
+        DnsLimits {
+            max_pending_total: 4097,
+            ..limits
+        },
+        DnsLimits {
+            query_timeout: 0,
+            ..limits
+        },
+    ] {
+        assert!(matches!(r.set_dns_limits(bad), Err(RelayError::Config)));
+        assert_eq!(r.pending_dns_count(), 2);
+        assert_eq!(r.flow_count(), 2);
+    }
+    r.expire(3).unwrap();
+    assert_eq!(r.pending_dns_count(), 0);
+    assert_eq!(r.flow_count(), 2);
+    r.send(&packet(1234, 2), 3).unwrap();
+    r.set_dns_limits(limits).unwrap();
+    assert_eq!(r.pending_dns_count(), 0);
     assert_eq!(r.flow_count(), 0);
+    assert!(matches!(
+        r.receive(first.flow, 3),
+        Err(RelayError::UnknownFlow)
+    ));
+}
+
+#[test]
+fn pending_queries_require_successful_protection_and_current_packet_policy() {
+    struct Refuse;
+    impl SocketProtector for Refuse {
+        fn protect(&self, _: &UdpSocket) -> io::Result<()> {
+            Err(io::Error::other("refused"))
+        }
+    }
+    let s = server("127.0.0.1:0");
+    let endpoint = s.local_addr().unwrap();
+    let mut denied = UdpRelay::new(
+        Policy::new(vec![], Action::Allow).unwrap(),
+        Config {
+            max_flows: 4,
+            timeout: 10,
+            checksums: ChecksumPolicy::Require,
+        },
+        1500,
+        Refuse,
+    )
+    .unwrap();
+    denied
+        .set_dns_filter(Some(policy()), vec![endpoint.port()])
+        .unwrap();
+    assert!(matches!(
+        denied.send(&datagram(endpoint, &query("safe.example", 1)), 0),
+        Err(RelayError::Io(_))
+    ));
+    assert_eq!(denied.pending_dns_count(), 0);
+    assert_eq!(denied.flow_count(), 0);
+
+    let (mut r, _) = relay(endpoint, Action::Allow);
+    let sent = r
+        .send(&datagram(endpoint, &query("first.example", 1)), 0)
+        .unwrap();
+    r.send(&datagram(endpoint, &query("second.example", 2)), 0)
+        .unwrap();
+    // Invalid packet-policy replacement retains both waiting requests.
+    let invalid = netscope_policy::Rule {
+        source_port: Some(std::ops::RangeInclusive::new(9, 1)),
+        priority: 0,
+        action: Action::Deny,
+        source: None,
+        destination: None,
+        protocol: None,
+        destination_port: None,
+    };
+    assert!(r.update_policy(vec![invalid], Action::Deny).is_err());
+    assert_eq!(r.pending_dns_count(), 2);
+    r.update_policy(vec![], Action::Deny).unwrap();
+    assert_eq!(r.pending_dns_count(), 0);
+    assert_eq!(r.flow_count(), 0);
+    assert!(matches!(
+        r.receive(sent.flow, 1),
+        Err(RelayError::UnknownFlow)
+    ));
 }

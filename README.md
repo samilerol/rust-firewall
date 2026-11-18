@@ -25,7 +25,7 @@ See [architecture](docs/ARCHITECTURE.md), [security model](docs/SECURITY_MODEL.m
 
 ## Limitations
 
-Portable UDP socket relay exists with loopback coverage; experimental TCP forwarding is available as a portable library; app attribution, question-based classic UDP DNS filtering exists as an opt-in relay feature; DPI, IDS and kernel adapters remain unimplemented. A minimal Android consent/service/JNI diagnostic discards all read datagrams; it is not a usable forwarding firewall. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
+Portable UDP relay and experimental TCP forwarding are available as libraries with loopback coverage. Question-based classic UDP/TCP DNS filtering is opt-in; app attribution, DPI, IDS and kernel adapters remain unimplemented. A minimal Android consent/service/JNI diagnostic discards all read datagrams; it is not a usable forwarding firewall. IPv4 options/fragments, IPv6 extension headers/jumbograms and non-TCP/UDP protocols are rejected. `parse` extracts metadata without checksum checks; `parse_checked` validates IPv4 header and TCP/UDP pseudo-header checksums under an explicit UDP omission policy. TCP options are bounded but not interpreted. Parsed metadata is untrusted, not proof of authenticity. Synthetic hosted-runner microbenchmarks exist; there are no Android performance or device leak-test results.
 
 This public project must never receive private code from `samilerol/netscope`.
 
@@ -57,8 +57,8 @@ See [engine/transport contracts](docs/ENGINE_TRANSPORT.md). APK/UI work is pause
 
 ## Classic DNS/domain policy
 
-`netscope-dns` adds bounded compression/EDNS/message parsing and exact/subdomain rules. Enable it explicitly on selected UDP destination ports with `UdpRelay::set_dns_filter`; allowed names still require packet policy allow. Replies must match one pending transaction/question per flow. See [DNS scope and limits](docs/DNS_POLICY.md): this does not inspect DoH/DoT, TCP DNS, aliases or direct IP access, and is not DNSSEC validation. APK/UI remains paused.
+`netscope-dns` adds bounded compression/EDNS/message parsing and exact/subdomain rules. Enable it explicitly on selected UDP destination ports with `UdpRelay::set_dns_filter`; allowed names still require packet policy allow. Replies must match a bounded pending transaction/question; concurrent IDs and independent query expiry are supported. See [DNS scope and limits](docs/DNS_POLICY.md): the separate [TCP DNS guard](docs/TCP_DNS.md) adds explicit stream filtering. Neither inspects DoH/DoT, aliases or direct IP access, or validates DNSSEC. APK/UI remains paused.
 
 ## Experimental TCP software path
 
-`netscope_transport::tcp::TcpRelay` connects raw IPv4/IPv6 TCP to caller-protected nonblocking OS streams using smoltcp. It has bounded flow/stream/packet budgets, partial-write backpressure, half-close handling and explicit clock/connect/idle limits. See [TCP contracts](docs/TCP_TRANSPORT.md). TCP DNS/encrypted-domain filtering and platform integration are not implemented. APK/UI remains paused.
+`netscope_transport::tcp::TcpRelay` connects raw IPv4/IPv6 TCP to caller-protected nonblocking OS streams using smoltcp. It has bounded flow/stream/packet budgets, partial-write backpressure, half-close handling and explicit clock/connect/idle limits. See [TCP contracts](docs/TCP_TRANSPORT.md). An opt-in [classic TCP DNS guard](docs/TCP_DNS.md) validates bounded complete frames before forwarding. Encrypted-domain filtering and platform integration remain unimplemented. APK/UI remains paused.

@@ -24,3 +24,5 @@ getrandom = "=0.2.17"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Safe poll(2) wrapper for the readiness wait; keeps this crate free of unsafe code.
+rustix = { version = "=1.1.6", default-features = false, features = ["std", "event"] }

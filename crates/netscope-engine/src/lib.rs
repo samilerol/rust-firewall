@@ -1,7 +1,7 @@
 //! Platform-independent checked packet admission. Admission does not implement TCP state or I/O.
 use netscope_conntrack::{FlowId, TrackError, Tracker};
 use netscope_packet::{parse_checked, ChecksumPolicy, Packet, ParseError};
-use netscope_policy::{Action, Decision, Policy, PolicyError, Rule};
+use netscope_policy::{Action, Context, ContextRule, Decision, Policy, PolicyError, Rule};
 
 pub const MAX_FLOWS: usize = 65_536;
 #[derive(Clone, Copy, Debug)]
@@ -56,6 +56,11 @@ impl Engine {
     }
     /// Every datagram is parsed and re-evaluated, even for an already observed flow.
     pub fn process(&mut self, bytes: &[u8], now: u64) -> Outcome {
+        self.process_in(bytes, now, &Context::default())
+    }
+    /// Like [`Engine::process`] for a flow whose uid/network the caller resolved. The caller must
+    /// pass the same context for every packet of a flow and again to `authorize_response_in`.
+    pub fn process_in(&mut self, bytes: &[u8], now: u64, context: &Context) -> Outcome {
         if self.flows.expire(now).is_err() {
             return self.drop_packet(DropReason::ClockReversed);
         }
@@ -63,7 +68,7 @@ impl Engine {
             Ok(v) => v.packet,
             Err(e) => return self.drop_packet(DropReason::Packet(e)),
         };
-        let decision = self.policy.decide(&packet);
+        let decision = self.policy.decide_in(&packet, context);
         if decision.action == Action::Deny {
             return self.drop_packet(DropReason::Policy {
                 rule_index: decision.rule_index,
@@ -91,14 +96,35 @@ impl Engine {
     }
     /// Validate a whole replacement before mutation. A failed update keeps the active policy.
     pub fn update_policy(&mut self, rules: Vec<Rule>, default: Action) -> Result<(), PolicyError> {
-        let candidate = Policy::new(rules, default)?;
+        self.replace_policy(Policy::new(rules, default)?);
+        Ok(())
+    }
+    /// [`Engine::update_policy`] for rules with uid/network constraints.
+    pub fn update_context_policy(
+        &mut self,
+        rules: Vec<ContextRule>,
+        default: Action,
+    ) -> Result<(), PolicyError> {
+        self.replace_policy(Policy::with_context_rules(rules, default)?);
+        Ok(())
+    }
+    fn replace_policy(&mut self, candidate: Policy) {
         self.policy = candidate;
         self.flows.clear();
-        Ok(())
     }
     /// Response authorization only: checks integrity, current policy and monotonic time,
     /// but does not create or refresh a reverse flow observation.
     pub fn authorize_response(&mut self, bytes: &[u8], original: &FlowId, now: u64) -> Outcome {
+        self.authorize_response_in(bytes, original, now, &Context::default())
+    }
+    /// [`Engine::authorize_response`] evaluated with the original flow's context.
+    pub fn authorize_response_in(
+        &mut self,
+        bytes: &[u8],
+        original: &FlowId,
+        now: u64,
+        context: &Context,
+    ) -> Outcome {
         if self.flows.expire(now).is_err() {
             return self.drop_packet(DropReason::ClockReversed);
         }
@@ -115,7 +141,7 @@ impl Engine {
         {
             return self.drop_packet(DropReason::UnmatchedResponse);
         }
-        let decision = self.policy.decide(&packet);
+        let decision = self.policy.decide_in(&packet, context);
         if decision.action == Action::Deny {
             return self.drop_packet(DropReason::Policy {
                 rule_index: decision.rule_index,
@@ -133,6 +159,17 @@ impl Engine {
         removed: impl FnMut(FlowId),
     ) -> Result<usize, TrackError> {
         self.flows.expire_with(now, removed)
+    }
+    /// Extend an existing flow's idle lease after the caller accepted traffic for it (for
+    /// example an authorized UDP reply). Never creates a flow and never authorizes anything.
+    pub fn refresh_flow(&mut self, id: &FlowId, now: u64) {
+        if self.flows.get(id).is_some() {
+            let _ = self.flows.observe(*id, now);
+        }
+    }
+    /// Tick at which the oldest tracked flow expires; lets a caller sleep until then.
+    pub fn next_expiry(&self) -> Option<u64> {
+        self.flows.next_expiry()
     }
     pub fn flow_count(&self) -> usize {
         self.flows.len()

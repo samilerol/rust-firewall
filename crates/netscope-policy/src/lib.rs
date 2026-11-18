@@ -13,6 +13,28 @@ pub struct Cidr {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidPrefix;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CidrParseError {
+    MissingPrefix,
+    InvalidAddress,
+    InvalidPrefix,
+}
+
+impl std::str::FromStr for Cidr {
+    type Err = CidrParseError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (address, prefix) = text.split_once('/').ok_or(CidrParseError::MissingPrefix)?;
+        let address = address
+            .parse()
+            .map_err(|_| CidrParseError::InvalidAddress)?;
+        if !(1..=3).contains(&prefix.len()) || !prefix.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(CidrParseError::InvalidPrefix);
+        }
+        let prefix = prefix.parse().map_err(|_| CidrParseError::InvalidPrefix)?;
+        Self::new(address, prefix).map_err(|_| CidrParseError::InvalidPrefix)
+    }
+}
 impl Cidr {
     pub fn new(network: IpAddr, prefix: u8) -> Result<Self, InvalidPrefix> {
         if prefix > if network.is_ipv4() { 32 } else { 128 } {
@@ -62,16 +84,72 @@ impl Rule {
                 .is_none_or(|r| r.contains(&packet.destination_port))
     }
 }
+/// Coarse class of the network a flow uses. Supplied by the caller; never inferred from packets.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Network {
+    #[default]
+    Unknown,
+    Wifi,
+    Cellular,
+    Other,
+}
+/// Caller-supplied facts about a flow that packets cannot prove. The default (unknown uid,
+/// unknown network) is what the context-free APIs use. Treat these as untrusted-quality
+/// attribution: the platform's resolution can fail or race, which is why `Unknown` is explicit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Context {
+    /// Owning application uid, or None when it could not be resolved.
+    pub uid: Option<u32>,
+    pub network: Network,
+}
+/// Uid constraint of a context rule. `Unknown` matches only flows whose uid is unresolved;
+/// `Range` never matches an unresolved uid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UidMatch {
+    Unknown,
+    Range(RangeInclusive<u32>),
+}
+/// A packet [`Rule`] plus optional uid/network constraints; all present constraints must match.
+#[derive(Clone, Debug)]
+pub struct ContextRule {
+    pub rule: Rule,
+    pub uid: Option<UidMatch>,
+    pub network: Option<Network>,
+}
+impl From<Rule> for ContextRule {
+    fn from(rule: Rule) -> Self {
+        Self {
+            rule,
+            uid: None,
+            network: None,
+        }
+    }
+}
+impl ContextRule {
+    fn matches(&self, packet: &Packet, context: &Context) -> bool {
+        self.rule.matches(packet)
+            && self
+                .uid
+                .as_ref()
+                .is_none_or(|wanted| match (wanted, context.uid) {
+                    (UidMatch::Unknown, None) => true,
+                    (UidMatch::Range(range), Some(uid)) => range.contains(&uid),
+                    _ => false,
+                })
+            && self.network.is_none_or(|wanted| wanted == context.network)
+    }
+}
 /// Absolute rule-count ceiling; callers may impose a smaller bound.
 pub const MAX_RULES: usize = 4096;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PolicyError {
     TooManyRules { limit: usize },
     InvalidPortRange { rule_index: usize },
+    InvalidUidRange { rule_index: usize },
 }
 #[derive(Debug)]
 pub struct Policy {
-    rules: Vec<(usize, Rule)>,
+    rules: Vec<(usize, ContextRule)>,
     default: Action,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,26 +169,57 @@ impl Policy {
         default: Action,
         limit: usize,
     ) -> Result<Self, PolicyError> {
+        Self::with_context_limit(
+            rules.into_iter().map(ContextRule::from).collect(),
+            default,
+            limit,
+        )
+    }
+    /// Like [`Policy::new`] for rules that may also constrain the flow's uid or network.
+    pub fn with_context_rules(
+        rules: Vec<ContextRule>,
+        default: Action,
+    ) -> Result<Self, PolicyError> {
+        Self::with_context_limit(rules, default, MAX_RULES)
+    }
+    pub fn with_context_limit(
+        rules: Vec<ContextRule>,
+        default: Action,
+        limit: usize,
+    ) -> Result<Self, PolicyError> {
         let limit = limit.min(MAX_RULES);
         if rules.len() > limit {
             return Err(PolicyError::TooManyRules { limit });
         }
-        for (rule_index, rule) in rules.iter().enumerate() {
+        for (rule_index, entry) in rules.iter().enumerate() {
+            let rule = &entry.rule;
             if rule.source_port.as_ref().is_some_and(|r| r.is_empty())
                 || rule.destination_port.as_ref().is_some_and(|r| r.is_empty())
             {
                 return Err(PolicyError::InvalidPortRange { rule_index });
             }
+            if matches!(&entry.uid, Some(UidMatch::Range(r)) if r.is_empty()) {
+                return Err(PolicyError::InvalidUidRange { rule_index });
+            }
         }
         let mut rules: Vec<_> = rules.into_iter().enumerate().collect();
-        rules.sort_unstable_by_key(|(index, rule)| (rule.priority, *index));
+        rules.sort_unstable_by_key(|(index, entry)| (entry.rule.priority, *index));
         Ok(Self { rules, default })
     }
+    /// Decision for a flow with unknown uid and network; context-constrained rules only match
+    /// if they ask for `UidMatch::Unknown` / `Network::Unknown`.
     pub fn decide(&self, packet: &Packet) -> Decision {
-        let matched = self.rules.iter().find(|(_, r)| r.matches(packet));
+        self.decide_in(packet, &Context::default())
+    }
+    /// Decision for a flow with the caller-supplied `context`; same ordering as [`Policy::decide`].
+    pub fn decide_in(&self, packet: &Packet, context: &Context) -> Decision {
+        let matched = self
+            .rules
+            .iter()
+            .find(|(_, entry)| entry.matches(packet, context));
         match matched {
-            Some((i, r)) => Decision {
-                action: r.action,
+            Some((i, entry)) => Decision {
+                action: entry.rule.action,
                 rule_index: Some(*i),
             },
             None => Decision {
@@ -348,4 +457,118 @@ mod tests {
             }
         }
     }
+    fn ctx(uid: Option<u32>, network: Network) -> Context {
+        Context { uid, network }
+    }
+    fn with(rule: Rule, uid: Option<UidMatch>, network: Option<Network>) -> ContextRule {
+        ContextRule { rule, uid, network }
+    }
+    #[test]
+    fn uid_rules_match_known_ranges_and_unknown_explicitly() {
+        let p = packet();
+        let policy = Policy::with_context_rules(
+            vec![
+                with(
+                    rule(0, Action::Allow),
+                    Some(UidMatch::Range(10_100..=10_199)),
+                    None,
+                ),
+                with(rule(1, Action::Deny), Some(UidMatch::Unknown), None),
+            ],
+            Action::Allow,
+        )
+        .unwrap();
+        let known = policy.decide_in(&p, &ctx(Some(10_150), Network::Wifi));
+        assert_eq!((known.action, known.rule_index), (Action::Allow, Some(0)));
+        // Outside the range falls through to the default; a range never matches unknown.
+        let other = policy.decide_in(&p, &ctx(Some(10_200), Network::Wifi));
+        assert_eq!((other.action, other.rule_index), (Action::Allow, None));
+        let unknown = policy.decide_in(&p, &ctx(None, Network::Wifi));
+        assert_eq!(
+            (unknown.action, unknown.rule_index),
+            (Action::Deny, Some(1))
+        );
+        // Context-free decide() is the unknown-uid case.
+        assert_eq!(policy.decide(&p), unknown);
+    }
+    #[test]
+    fn network_constraint_and_priority_order_with_context() {
+        let p = packet();
+        let policy = Policy::with_context_rules(
+            vec![
+                with(rule(5, Action::Allow), None, None),
+                with(rule(5, Action::Deny), None, Some(Network::Cellular)),
+                with(
+                    rule(0, Action::Deny),
+                    Some(UidMatch::Range(7..=7)),
+                    Some(Network::Wifi),
+                ),
+            ],
+            Action::Deny,
+        )
+        .unwrap();
+        // Lowest priority number first, then input order among equals (the unconstrained allow).
+        let wifi_uid7 = policy.decide_in(&p, &ctx(Some(7), Network::Wifi));
+        assert_eq!(wifi_uid7.rule_index, Some(2));
+        let cellular = policy.decide_in(&p, &ctx(Some(8), Network::Cellular));
+        assert_eq!(
+            (cellular.action, cellular.rule_index),
+            (Action::Allow, Some(0))
+        );
+        // Every present constraint must match: right uid, wrong network.
+        let cellular_uid7 = policy.decide_in(&p, &ctx(Some(7), Network::Cellular));
+        assert_eq!(cellular_uid7.rule_index, Some(0));
+    }
+    #[test]
+    fn plain_rules_ignore_context_and_invalid_uid_ranges_are_rejected() {
+        let p = packet();
+        let plain = Policy::new(vec![rule(0, Action::Deny)], Action::Allow).unwrap();
+        for context in [ctx(None, Network::Unknown), ctx(Some(1), Network::Cellular)] {
+            assert_eq!(plain.decide_in(&p, &context).action, Action::Deny);
+        }
+        let inverted = with(
+            rule(0, Action::Allow),
+            Some(UidMatch::Range(std::ops::RangeInclusive::new(5, 4))),
+            None,
+        );
+        assert_eq!(
+            Policy::with_context_rules(vec![rule(0, Action::Allow).into(), inverted], Action::Deny)
+                .unwrap_err(),
+            PolicyError::InvalidUidRange { rule_index: 1 }
+        );
+        assert_eq!(
+            Policy::with_context_limit(vec![rule(0, Action::Allow).into(); 2], Action::Deny, 1)
+                .unwrap_err(),
+            PolicyError::TooManyRules { limit: 1 }
+        );
+    }
 }
+
+#[cfg(test)]
+mod cidr_text_tests {
+    use super::*;
+
+    #[test]
+    fn text_preserves_family_and_prefix_boundaries() {
+        let v4: Cidr = "192.0.2.65/26".parse().unwrap();
+        assert!(v4.contains("192.0.2.127".parse().unwrap()));
+        assert!(!v4.contains("192.0.2.128".parse().unwrap()));
+        let v6: Cidr = "2001:db8::1/128".parse().unwrap();
+        assert!(v6.contains("2001:db8::1".parse().unwrap()));
+        assert!(!v6.contains("2001:db8::2".parse().unwrap()));
+        for text in [
+            "192.0.2.1",
+            "192.0.2.1/33",
+            "2001:db8::/129",
+            "192.0.2.1/+1",
+            "2001:db8::/64/2",
+            "192.0.2.1/ 1",
+            "not-an-ip/0",
+        ] {
+            assert!(text.parse::<Cidr>().is_err(), "{text}");
+        }
+    }
+}
+
+/// Bounded versioned packet-policy text input.
+pub mod config;

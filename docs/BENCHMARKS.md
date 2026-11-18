@@ -35,3 +35,7 @@ CI additionally checks out immutable pre-optimization eade0426c803aabb59cd462671
 ## DNS additions (six cases; 37 total)
 
 New current-only cases measure standard query parsing, compressed response parsing, and domain-rule hit/miss evaluation at 64/4096 rules. Construction and fixture checks are outside timing. Matching rules have explicit priority 0; miss cases scan the compiled list. Parsing includes owned normalized question-name allocation. Historical same-runner comparison remains limited to the 31 common core cases; DNS is a new baseline with no previous-version ratio. Smoke now emits 149 CSV lines; baseline emits 297.
+
+## Policy scaling measurement
+
+A smoke run (release, one shared host) showed a non-matching packet costing about 150 ns at 64 rules, 1.1 microseconds at 512 and 8.6 microseconds at 4096 (a full linear scan, roughly 2 ns per rule), while a matching rule at the front costs about 9 ns. Realistic phone rule sets are far below the cap and domain lists use the separate DNS policy, so no rule index has been added; revisit it if a rule set near the 4096 cap must run at tens of thousands of packets per second.

@@ -1,0 +1,122 @@
+<resources>
+    <item name="vpn_action" type="id" />
+    <style name="NetScopeTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:windowBackground">#0C1420</item>
+        <item name="android:colorAccent">#59E6CA</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#0C1420</item>
+        <item name="android:navigationBarColor">#0C1420</item>
+    </style>
+    <string name="preview_label">PREVIEW</string>
+    <string name="vpn_connect">Connect</string>
+    <string name="vpn_disconnect">Disconnect</string>
+    <string name="vpn_off">Disconnected</string>
+    <string name="vpn_off_detail">Connect to route web and DNS traffic through NetScope.</string>
+    <string name="vpn_connecting">Connecting…</string>
+    <string name="vpn_disconnecting">Disconnecting…</string>
+    <string name="vpn_connected">VPN active</string>
+    <string name="vpn_connected_detail">The web and DNS profile is active.</string>
+    <string name="vpn_diagnostic_active">Diagnostics active</string>
+    <string name="vpn_diagnostic_detail">All routed traffic is currently blocked.</string>
+    <string name="vpn_failed">Connection failed</string>
+    <string name="vpn_failed_detail">The VPN closed. You can try connecting again.</string>
+    <string name="vpn_unavailable">VPN unavailable</string>
+    <string name="vpn_unavailable_detail">The native network component could not load.</string>
+    <string name="profile_title">Traffic profile</string>
+    <string name="profile_subtitle">Traffic outside this profile is blocked while connected.</string>
+    <string name="profile_web">Web</string>
+    <string name="profile_web_ports">TCP 80 · 443</string>
+    <string name="profile_dns">DNS resolver</string>
+    <string name="profile_dns_name">Cloudflare · 1.1.1.1</string>
+    <string name="diagnostic_title">Diagnostics</string>
+    <string name="diagnostic_body">Diagnostic mode blocks all traffic routed through NetScope until you disconnect.</string>
+    <string name="diagnostic_start">Start diagnostics</string>
+    <string name="notification_needed">Allow notifications to use the VPN stop control.</string>
+    <string name="consent_needed">VPN permission is required to connect.</string>
+    <string name="startup_rejected">Android rejected VPN startup.</string>
+
+    <item name="traffic_action" type="id" />
+    <item name="traffic_list" type="id" />
+    <string name="traffic_title">Apps</string>
+    <string name="traffic_back">Back</string>
+    <string name="traffic_scope">Outbound packets seen during this VPN session. Counts stay on this device and clear on disconnect.</string>
+    <string name="traffic_search">Search app or package</string>
+    <string name="traffic_blocked_only">Show apps with blocked packets</string>
+    <string name="traffic_off">Connect to NetScope to see app traffic here.</string>
+    <string name="traffic_old_android">App names require Android 10 or later.</string>
+    <string name="traffic_empty">Waiting for outbound traffic.</string>
+    <string name="traffic_no_match">No apps match these filters.</string>
+    <string name="traffic_unknown">Unknown app</string>
+    <string name="traffic_uid">App UID %1$d</string>
+    <string name="traffic_shared_uid">Shared app UID %1$d</string>
+    <string name="traffic_counts">%1$s · %2$d packets · %3$d blocked</string>
+
+    <item name="traffic_report_action" type="id" />
+    <string name="report_title">Traffic report</string>
+    <string name="report_empty">No outbound traffic has been observed in this forwarding session.</string>
+    <string name="report_totals">Observed outbound data: %1$s\nPackets: %2$d\nBlocked by network profile: %3$d\nBlocked by app rules: %4$d\nIdentified UIDs: %5$d\nPackets with unknown owner: %6$d</string>
+    <string name="report_scope">This report covers checked TCP and UDP packets routed to NetScope during this VPN session. It does not cover modem signalling or traffic outside the VPN.</string>
+    <string name="voice_title">Voice command</string>
+    <string name="voice_listening">Listening…</string>
+    <string name="voice_status">VPN status</string>
+    <string name="voice_unavailable">On-device voice recognition is unavailable on this device.</string>
+    <string name="voice_failure">Could not recognize speech on this device. Check the offline language or use touch controls.</string>
+    <string name="voice_permission">Microphone permission is needed for voice commands.</string>
+    <string name="voice_help">Try: traffic report, apps, VPN status, connect, or disconnect.</string>
+    <string name="voice_confirm">Confirm the requested VPN change.</string>
+    <string name="voice_no_change">This command cannot change the current VPN state.</string>
+    <item name="modem_action" type="id" />
+    <item name="modem_heading" type="id" />
+    <item name="modem_events" type="id" />
+    <string name="modem_title">Modem diagnostics</string>
+    <string name="modem_scope">Android events for the default data SIM when this screen opens. Raw modem signalling and packet contents are outside this view.</string>
+    <string name="modem_waiting">Waiting for the first Android radio event.</string>
+    <string name="modem_live">Live Android events · newest first</string>
+    <string name="modem_unavailable">Radio events are unavailable. This screen needs Android 12 or later and a supported mobile connection.</string>
+    <string name="modem_permission_intro">Allow phone state access to see mobile service, data and signal events. No phone number, location or subscriber ID is collected.</string>
+    <string name="modem_permission_button">Allow radio event access</string>
+    <string name="modem_no_sim">Android reports no default mobile data SIM.</string>
+    <string name="modem_unknown">Unknown</string>
+    <string name="modem_lte">LTE</string>
+    <string name="modem_nr">5G NR</string>
+    <string name="modem_2g">2G</string>
+    <string name="modem_3g">3G</string>
+    <string name="modem_iwlan">IWLAN</string>
+    <string name="modem_service_in">In service</string>
+    <string name="modem_service_out">Out of service</string>
+    <string name="modem_service_emergency">Emergency calls only</string>
+    <string name="modem_service_off">Radio off</string>
+    <string name="modem_service_event">Mobile service · %1$s</string>
+    <string name="modem_data_connected">Connected</string>
+    <string name="modem_data_connecting">Connecting</string>
+    <string name="modem_data_disconnected">Disconnected</string>
+    <string name="modem_data_suspended">Suspended</string>
+    <string name="modem_data_event">Mobile data · %1$s · %2$s</string>
+    <string name="modem_signal_event">Android signal level · %1$d/4</string>
+    <item name="performance_action" type="id" />
+    <item name="performance_cpu" type="id" />
+    <item name="performance_app_ram" type="id" />
+    <item name="performance_device_ram" type="id" />
+    <string name="performance_title">Performance</string>
+    <string name="performance_scope">Measurements update every two seconds while this screen is open.</string>
+    <string name="performance_cpu">NetScope CPU</string>
+    <string name="performance_cpu_explanation">Process usage including VPN work. 100 percent equals one fully used CPU core.</string>
+    <string name="performance_app_ram">NetScope memory</string>
+    <string name="performance_app_ram_explanation">PSS counts private memory and a proportional share of shared memory.</string>
+    <string name="performance_device_ram">Device memory</string>
+    <string name="performance_device_ram_explanation">Memory Android reports as available and total usable by the system.</string>
+    <string name="performance_waiting">Measuring…</string>
+    <string name="performance_not_available">Unavailable</string>
+    <string name="performance_available">%1$s available of %2$s</string>
+    <item name="app_rules_action" type="id" />
+    <string name="app_rules_title">App rules</string>
+    <string name="app_rules_scope">Select apps to block in the next VPN session. The block applies to all apps sharing an Android UID. When any app rule is enabled, outbound traffic with an unknown owner is blocked too.</string>
+    <string name="app_rules_choose">Choose apps</string>
+    <string name="app_rules_save">Save</string>
+    <string name="app_rules_saved">App rules saved for the next connection.</string>
+    <string name="app_rules_save_error">App rules could not be saved.</string>
+    <string name="app_rules_limit">Select no more than 64 apps.</string>
+    <string name="app_rules_disconnect">Disconnect before editing app rules.</string>
+    <string name="app_rules_old_android">App rules need Android 10 or later.</string>
+</resources>

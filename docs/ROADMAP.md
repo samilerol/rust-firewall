@@ -14,6 +14,8 @@ Compare performance against NetGuard, RethinkDNS and PCAPdroid on comparable dev
 
 Implemented: optimized one-record expiry index, compiled precedence, checked Engine and bounded IPv4/IPv6 UDP relay with loopback tests. Android diagnostic is unchanged and not wired to it. Next priorities: maintained TCP stack selection and stream lifecycle/backpressure; readiness scheduling and transport byte budgets; supported identity/network policy context; bounded serialized config; DNS/domain inspection. Keep device integration/production claims gated on actual device evidence.
 
-Classic UDP question parsing/domain policy is implemented with explicit scope in DNS_POLICY.md. Next DNS work: bounded concurrent transaction support/independent expiry, TCP DNS once TCP transport exists, evaluated alias/rebinding policies and secure resolver/authentication designs. No encrypted-DNS visibility should be assumed.
+Classic UDP question parsing/domain policy is implemented with explicit scope in DNS_POLICY.md. Bounded concurrent transactions and independent first-send expiry are implemented. Opt-in bounded TCP DNS framing/stream policy is also implemented (TCP_DNS.md). Next DNS work: broader classic DNS interoperability, evaluated alias/rebinding policies and secure resolver/authentication designs. No encrypted-DNS visibility should be assumed.
 
-Experimental TCP relay is implemented with explicit scope in TCP_TRANSPORT.md. Next portable priorities are bounded readiness scheduling, handshake/fairness limits, TCP DNS framing, richer identity/network context and bounded external configuration. APK/UI/platform integration remains paused; no device or WAN guarantees are inferred.
+Experimental TCP relay is implemented with explicit scope in TCP_TRANSPORT.md. Next portable priorities are bounded readiness scheduling, handshake/fairness limits, richer identity/network context and bounded external configuration. APK/UI/platform integration remains paused; no device or WAN guarantees are inferred.
+
+See [platform targets](PLATFORM_TARGETS.md) for Linux, OpenWrt and DD-WRT integration boundaries. Android's application identity remains in the Android adapter.
