@@ -38,6 +38,8 @@ fn config() -> Config {
         buffer_budget: 64 * 1024,
         idle_timeout_ms: 30000,
         connect_timeout_ms: 1000,
+        max_pending: 2,
+        max_flows_per_uid: 2,
     }
 }
 fn relay(action: Action, fail: bool) -> (TcpRelay<Protector>, Arc<AtomicUsize>) {
@@ -328,6 +330,8 @@ fn capacity_clock_budget_and_first_syn_are_explicit() {
     let (mut relay, calls) = relay(Action::Allow, false);
     let mut cfg = config();
     cfg.max_flows = 0;
+    cfg.max_pending = 0;
+    cfg.max_flows_per_uid = 0;
     let mut zero = TcpRelay::new(
         Policy::new(vec![], Action::Allow).unwrap(),
         cfg,
@@ -415,6 +419,8 @@ fn real_flow_capacity_and_policy_reset_revoke_queued_packets() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut cfg = config();
     cfg.max_flows = 1;
+    cfg.max_pending = 1;
+    cfg.max_flows_per_uid = 1;
     let mut r = TcpRelay::new(
         Policy::new(vec![], Action::Allow).unwrap(),
         cfg,
@@ -1342,4 +1348,107 @@ fn uid_policy_gates_tcp_admission_and_the_flow_context_authorizes_output() {
         r.ingest_in(&bytes, 1, &Context::default()).unwrap();
     }
     assert_eq!(r.flow_count(), 1);
+}
+fn quota_relay(
+    max_flows: usize,
+    max_pending: usize,
+    per_uid: usize,
+) -> (TcpRelay<Protector>, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cfg = Config {
+        max_flows,
+        max_pending,
+        max_flows_per_uid: per_uid,
+        buffer_budget: MAX_BUFFER_BUDGET,
+        ..config()
+    };
+    (
+        TcpRelay::new(
+            Policy::new(vec![], Action::Allow).unwrap(),
+            cfg,
+            Protector {
+                calls: calls.clone(),
+                fail: false,
+            },
+        )
+        .unwrap(),
+        calls,
+    )
+}
+#[test]
+fn per_uid_quota_limits_one_app_without_starving_others() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let (mut r, calls) = quota_relay(4, 4, 1);
+    let uid = |uid| Context {
+        uid,
+        ..Context::default()
+    };
+    let syn = |port| Client::with_port(endpoint, port).syn();
+    r.ingest_in(&syn(20001), 0, &uid(Some(10_001))).unwrap();
+    // The same uid is refused with no socket opened; another uid and the unknown bucket still fit.
+    assert!(matches!(
+        r.ingest_in(&syn(20002), 0, &uid(Some(10_001))),
+        Err(Error::Quota)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    r.ingest_in(&syn(20003), 0, &uid(Some(10_002))).unwrap();
+    r.ingest_in(&syn(20004), 0, &uid(None)).unwrap();
+    assert_eq!(r.flow_count(), 3);
+    // A retransmitted SYN of an existing flow is not a new flow and is not refused.
+    r.ingest_in(&syn(20001), 0, &uid(Some(10_001))).unwrap();
+    // Once the flow is gone the uid may open again.
+    r.reset_network();
+    r.ingest_in(&syn(20002), 1, &uid(Some(10_001))).unwrap();
+}
+#[test]
+fn pending_handshake_quota_bounds_a_syn_burst_until_handshakes_finish() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let (mut r, calls) = quota_relay(4, 1, 4);
+    let mut first = Client::with_port(endpoint, 20001);
+    let mut second = Client::with_port(endpoint, 20002);
+    r.ingest(&first.syn(), 0).unwrap();
+    let second_syn = second.syn();
+    assert!(matches!(r.ingest(&second_syn, 0), Err(Error::Quota)));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "refused SYN opens no upstream"
+    );
+    assert_eq!(r.flow_count(), 1);
+    // Complete the first handshake; it stops counting as pending and the second may proceed.
+    for now in 0..20 {
+        first.step(&mut r, now);
+        if client_state(&first) == State::Established {
+            first.step(&mut r, now + 1);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(client_state(&first), State::Established);
+    // The first client's final ACK was ingested, so its flow no longer counts as pending.
+    r.ingest(&second_syn, 30).unwrap();
+    assert_eq!(r.flow_count(), 2);
+}
+#[test]
+fn quotas_larger_than_the_flow_cap_are_rejected_at_construction() {
+    for (pending, per_uid) in [(3, 2), (2, 3)] {
+        let cfg = Config {
+            max_pending: pending,
+            max_flows_per_uid: per_uid,
+            ..config()
+        };
+        assert!(matches!(
+            TcpRelay::new(
+                Policy::new(vec![], Action::Allow).unwrap(),
+                cfg,
+                Protector {
+                    calls: Arc::new(AtomicUsize::new(0)),
+                    fail: false
+                }
+            ),
+            Err(Error::Config)
+        ));
+    }
 }

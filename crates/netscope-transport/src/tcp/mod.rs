@@ -38,6 +38,11 @@ pub struct Config {
     pub buffer_budget: usize,
     pub idle_timeout_ms: u64,
     pub connect_timeout_ms: u64,
+    /// Most flows whose handshake is unfinished (upstream connecting or the client's final ACK
+    /// outstanding). Bounds what a SYN burst can hold; at most `max_flows`.
+    pub max_pending: usize,
+    /// Most flows one uid (unknown uid counts as one bucket) may hold; at most `max_flows`.
+    pub max_flows_per_uid: usize,
 }
 #[derive(Debug)]
 pub enum Error {
@@ -48,6 +53,8 @@ pub enum Error {
     InitialSynRequired,
     Endpoint,
     Capacity,
+    /// A pending-handshake or per-uid flow quota refused a new flow; no state was created.
+    Quota,
     Backpressure,
     Terminated,
     Dropped(DropReason),
@@ -190,6 +197,12 @@ impl Flow {
         self.sockets.get_mut::<StackSocket>(self.handle).abort();
         self.failed = true;
         self.stack_poll(now);
+    }
+    /// Handshake unfinished: the upstream connect is pending or the client's final ACK is not in.
+    fn pending(&self) -> bool {
+        !self.failed
+            && (self.connecting
+                || self.sockets.get::<StackSocket>(self.handle).state() == State::SynReceived)
     }
     /// Which upstream readiness would let this flow make progress right now.
     fn interest(&self) -> Interest {
@@ -348,6 +361,8 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             || !(1..=86_400_000).contains(&config.idle_timeout_ms)
             || !(1..=30_000).contains(&config.connect_timeout_ms)
             || config.connect_timeout_ms > config.idle_timeout_ms
+            || config.max_pending > config.max_flows
+            || config.max_flows_per_uid > config.max_flows
         {
             return Err(Error::Config);
         }
@@ -510,6 +525,21 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             return Err(Error::Backpressure);
         }
         let context = self.flows.get(&id).map_or(*context, |flow| flow.context);
+        if !self.flows.contains_key(&id) {
+            let pending = self.flows.values().filter(|flow| flow.pending()).count();
+            let same_uid = self
+                .flows
+                .values()
+                .filter(|flow| flow.context.uid == context.uid)
+                .count();
+            // A full table keeps reporting FlowCapacity from the engine; quotas apply with room left.
+            let room = self.flows.len() < self.config.max_flows;
+            if room
+                && (pending >= self.config.max_pending || same_uid >= self.config.max_flows_per_uid)
+            {
+                return Err(Error::Quota);
+            }
+        }
         match self.engine.process_in(bytes, now, &context) {
             Outcome::Dropped(reason) => return Err(Error::Dropped(reason)),
             Outcome::Accepted { .. } => {}
