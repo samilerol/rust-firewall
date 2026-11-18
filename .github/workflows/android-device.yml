@@ -1,0 +1,97 @@
+name: Android device over Tailscale
+# Manual only: it needs secrets and a phone that is online. It never runs on pull requests.
+on:
+  workflow_dispatch:
+    inputs:
+      watch_seconds:
+        description: Seconds to observe the app after launch (connect the VPN on the phone in this window)
+        default: '60'
+      apk_run_id:
+        description: android.yml run id to take the APK from (empty = latest successful run on main)
+        default: ''
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: android-device
+  cancel-in-progress: false
+jobs:
+  device:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PHONE_HOST: ${{ vars.PHONE_TAILSCALE_HOST }}
+      PHONE_PORT: ${{ vars.PHONE_ADB_PORT || '5555' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Require configuration
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          ADB_KEY: ${{ secrets.ADB_KEY }}
+        run: |
+          missing=0
+          [ -n "$TS_AUTHKEY" ] || { echo "::error::secret TS_AUTHKEY is not set"; missing=1; }
+          [ -n "$ADB_KEY" ] || { echo "::error::secret ADB_KEY is not set"; missing=1; }
+          [ -n "$PHONE_HOST" ] || { echo "::error::repository variable PHONE_TAILSCALE_HOST is not set"; missing=1; }
+          [ "$missing" = 0 ] || { echo "See docs/ANDROID_DEVICE_CI.md for the one-time setup."; exit 1; }
+      - name: Join the tailnet as an ephemeral node
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: gha-netscope-${{ github.run_id }}
+          ping: ${{ vars.PHONE_TAILSCALE_HOST }}
+      - name: Install adb and the pre-authorized adb key
+        env:
+          ADB_KEY: ${{ secrets.ADB_KEY }}
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" platform-tools
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          mkdir -p ~/.android
+          (umask 077; printf '%s' "$ADB_KEY" | base64 -d > ~/.android/adbkey)
+      - name: Connect to the phone over the tailnet
+        run: |
+          adb start-server
+          adb connect "$PHONE_HOST:$PHONE_PORT"
+          timeout 30 adb -s "$PHONE_HOST:$PHONE_PORT" wait-for-device
+          adb devices -l
+          state=$(adb -s "$PHONE_HOST:$PHONE_PORT" get-state)
+          [ "$state" = device ] || { echo "::error::phone state is '$state' (unauthorized? re-run 'adb tcpip 5555' over USB)"; exit 1; }
+      - name: Fetch the preview APK from CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          id="${{ inputs.apk_run_id }}"
+          if [ -z "$id" ]; then
+            id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow android.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          fi
+          [ -n "$id" ] || { echo "::error::no successful android.yml run found"; exit 1; }
+          echo "Using android.yml run $id"
+          gh run download "$id" --repo "$GITHUB_REPOSITORY" --name android-preview --dir /tmp/apk
+          apk=$(find /tmp/apk -name '*.apk' | head -n1)
+          [ -n "$apk" ] || { echo "::error::artifact has no APK"; exit 1; }
+          echo "APK=$apk" >> "$GITHUB_ENV"
+      - name: Install, launch and collect evidence
+        env:
+          ADB_SERIAL: ${{ vars.PHONE_TAILSCALE_HOST }}:${{ vars.PHONE_ADB_PORT || '5555' }}
+          WATCH_SECONDS: ${{ inputs.watch_seconds }}
+          OUT_DIR: /tmp/netscope-device
+        run: bash tools/android_device_probe.sh
+      - name: Summary
+        if: always()
+        run: |
+          [ -f /tmp/netscope-device/summary.txt ] && { echo '```'; cat /tmp/netscope-device/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Preserve phone evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: android-device-evidence
+          path: /tmp/netscope-device
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Disconnect and remove the key
+        if: always()
+        run: |
+          adb disconnect "$PHONE_HOST:$PHONE_PORT" || true
+          rm -f ~/.android/adbkey ~/.android/adbkey.pub
