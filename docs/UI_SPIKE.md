@@ -21,7 +21,7 @@ Status: spike, 2026-11-19. Decision context: ADR-025 (whole product in Rust, UI 
 
 ## Not verified / next
 
-- cargo-deny licenses/advisories for the UI graph (CI result decides; `BSL-1.0` and `Zlib` may need an explicit policy decision).
+- cargo-deny for the UI graph runs with its own `ui/deny.toml`; the core `deny.toml` is unchanged. The first CI run failed: licenses `BSL-1.0`, `ISC`, `Zlib` (and `CC0-1.0`) are permissive but were not allow-listed, and `ttf-parser` (RUSTSEC-2026-0192, unmaintained notice, no known vulnerability) is a required dependency of egui's text stack. Owner approved (2026-11-19) allow-listing those licenses and ignoring that one advisory in `ui/deny.toml` with a documented reason; re-check on every egui upgrade.
 - Gradle/APK packaging of the Rust library, APK size, memory and startup, behavior on an emulator and the phone.
 - Calling `snapshotForwarding` from Rust (the export is JNI, so the bridge shape is still open).
 - Screens beyond Connections (Dashboard, Apps, Captures, Settings) and Turkish strings.

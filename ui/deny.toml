@@ -1,0 +1,22 @@
+# Policy for the isolated UI workspace only. The core's stricter deny.toml is unchanged.
+# Not an audit of the UI graph or a security proof.
+[advisories]
+unmaintained = "all"
+unsound = "all"
+ignore = [
+  # ttf-parser is a REQUIRED dependency of epaint -> ab_glyph (egui 0.32.3), so it cannot be
+  # removed with features. The advisory is "unmaintained" (INFO), not a vulnerability. It parses
+  # fonts only; the UI loads no user- or network-supplied fonts. Re-evaluate on every egui bump.
+  { id = "RUSTSEC-2026-0192", reason = "required via epaint/ab_glyph; unmaintained notice only, no known vulnerability; no untrusted fonts are loaded" },
+]
+
+[licenses]
+confidence-threshold = 0.8
+# Core allowlist plus permissive licenses that appear in the egui/winit graph:
+# BSL-1.0 (clipboard-win, error-code), ISC (libloading), Zlib (slotmap, foldhash, zlib-rs),
+# CC0-1.0 (hexf-parse).
+allow = ["Apache-2.0", "MIT", "0BSD", "Unicode-3.0", "Unlicense", "NCSA", "BSL-1.0", "ISC", "Zlib", "CC0-1.0"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
