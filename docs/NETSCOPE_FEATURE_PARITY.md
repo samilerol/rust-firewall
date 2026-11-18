@@ -24,7 +24,7 @@ Status: planning inventory, 2026-11-18. Written in the owner's own words from th
 | 16 | App lock (device credential on open and after 30 s in background) | Not implemented | New; independent of VPN protection |
 | 17 | Battery-optimization exemption prompt | Not implemented | New; OEM background kill is a real risk on Xiaomi |
 | 18 | UI language Turkish | English strings | Localization decision |
-| 19 | Flutter UI | Temporary framework Java screens | Decided (ADR-025): Flutter for presentation only; the original Dart UI layer may be ported, the Kotlin engine may not |
+| 19 | Flutter UI (original) | Temporary framework Java screens | Decided (ADR-025): full Rust, including UI; the Dart UI is not ported. Needs a Rust-native Android UI spike first |
 
 ## Suggested order
 
