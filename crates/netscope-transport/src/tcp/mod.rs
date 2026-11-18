@@ -1,7 +1,9 @@
 //! Experimental bounded raw-IP TCP proxy. Caller drives ingress, polling and output draining.
 mod device;
+mod dns_stream;
 use self::device::Device;
 use netscope_conntrack::FlowId;
+use netscope_dns::DomainPolicy;
 use netscope_engine::{Config as EngineConfig, DropReason, Engine, Outcome};
 use netscope_packet::{parse_checked, ChecksumPolicy, Protocol};
 use netscope_policy::{Action, Context, Policy, PolicyError, Rule};
@@ -14,7 +16,7 @@ use smoltcp::{
 };
 use socket2::{Domain, Protocol as OsProtocol, SockRef, Socket, Type};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     io::{self, Read, Write},
     net::{Shutdown, SocketAddr, TcpStream},
     time::Duration,
@@ -96,6 +98,8 @@ struct Flow {
     dirty: bool,
     /// uid/network the flow was admitted with; reused for every packet and reply of the flow.
     context: Context,
+    /// Present only for flows to a DNS-filtered port: gates both stream directions.
+    dns: Option<dns_stream::DnsStream>,
 }
 impl Drop for Flow {
     fn drop(&mut self) {
@@ -169,6 +173,7 @@ impl Flow {
             graceful: false,
             dirty: true,
             context: Context::default(),
+            dns: None,
         })
     }
     /// Whether the stack has timer or dispatch work due at `now` (cheap, no syscall).
@@ -216,6 +221,13 @@ impl Flow {
                 writable: true,
             };
         }
+        if let Some(dns) = &self.dns {
+            // Staged frames are flushed on client ACKs (dirty); only the fd needs a wait.
+            return Interest {
+                readable: !self.up_eof && dns.stage_room() > 0,
+                writable: dns.approved() > 0,
+            };
+        }
         let socket = self.sockets.get::<StackSocket>(self.handle);
         Interest {
             // Room to carry upstream bytes toward the client.
@@ -233,7 +245,7 @@ impl Flow {
         self.abort(now);
         self.device.tx.pop_front()
     }
-    fn pump(&mut self) -> io::Result<()> {
+    fn pump(&mut self, dns_policy: Option<&DomainPolicy>) -> io::Result<()> {
         let Some(upstream) = self.upstream.as_mut() else {
             return Ok(());
         };
@@ -248,7 +260,9 @@ impl Flow {
             }
         }
         let socket = self.sockets.get_mut::<StackSocket>(self.handle);
-        if socket.can_recv() {
+        if let (Some(dns), Some(policy)) = (self.dns.as_mut(), dns_policy) {
+            pump_dns(dns, policy, socket, upstream, &mut self.up_eof)?;
+        } else if socket.can_recv() {
             let result = socket.recv(|bytes| match upstream.write(bytes) {
                 Ok(0) => (
                     0,
@@ -265,7 +279,7 @@ impl Flow {
                 result?;
             }
         }
-        if socket.can_send() && !self.up_eof {
+        if self.dns.is_none() && socket.can_send() && !self.up_eof {
             let result = socket.send(|bytes| match upstream.read(bytes) {
                 Ok(n) => (n, Ok(n == 0)),
                 Err(e) if retry(&e) => (0, Ok(false)),
@@ -297,6 +311,91 @@ impl Flow {
         }
         Ok(())
     }
+}
+/// Move DNS-over-TCP bytes in both directions, releasing only complete, approved frames.
+fn pump_dns(
+    dns: &mut dns_stream::DnsStream,
+    policy: &DomainPolicy,
+    socket: &mut StackSocket,
+    upstream: &mut TcpStream,
+    up_eof: &mut bool,
+) -> io::Result<()> {
+    let violation = |_| io::Error::new(io::ErrorKind::InvalidData, "DNS stream violation");
+    if socket.can_recv() {
+        let queued = socket.recv_queue();
+        let capacity = socket.recv_capacity();
+        socket
+            .peek_slice(dns.scratch(queued))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "DNS peek failed"))?;
+        dns.inspect_client(capacity, policy).map_err(violation)?;
+        let allowed = dns.approved();
+        if allowed > 0 {
+            let mut wrote = 0;
+            let result =
+                socket.recv(
+                    |bytes| match upstream.write(&bytes[..bytes.len().min(allowed)]) {
+                        Ok(0) => (
+                            0,
+                            Err(io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "upstream accepted zero bytes",
+                            )),
+                        ),
+                        Ok(n) => {
+                            wrote = n;
+                            (n, Ok(()))
+                        }
+                        Err(e) if retry(&e) => (0, Ok(())),
+                        Err(e) => (0, Err(e)),
+                    },
+                );
+            if let Ok(result) = result {
+                result?;
+            }
+            dns.written(wrote);
+        }
+    }
+    let flush = |dns: &mut dns_stream::DnsStream, socket: &mut StackSocket| {
+        if socket.can_send() && !dns.deliverable().is_empty() {
+            let sent = socket.send_slice(dns.deliverable()).unwrap_or(0);
+            dns.delivered(sent);
+        }
+    };
+    flush(dns, socket);
+    if !*up_eof && dns.stage_room() > 0 {
+        let mut chunk = [0u8; 1024];
+        let room = chunk.len().min(dns.stage_room());
+        match upstream.read(&mut chunk[..room]) {
+            Ok(0) => {
+                if dns.has_partial() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "upstream closed inside a DNS frame",
+                    ));
+                }
+                *up_eof = true;
+            }
+            Ok(n) => dns.absorb(&chunk[..n], policy).map_err(violation)?,
+            Err(e) if retry(&e) => {}
+            Err(e) => return Err(e),
+        }
+        flush(dns, socket);
+    }
+    if *up_eof && dns.deliverable().is_empty() {
+        socket.close();
+    }
+    // The client closed in the middle of a frame: it can never be completed.
+    if matches!(
+        socket.state(),
+        State::CloseWait | State::LastAck | State::Closing | State::TimeWait
+    ) && socket.recv_queue() > dns.approved()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "client closed inside a DNS frame",
+        ));
+    }
+    Ok(())
 }
 fn retry(error: &io::Error) -> bool {
     matches!(
@@ -349,6 +448,8 @@ pub struct TcpRelay<P> {
     resets: VecDeque<Vec<u8>>,
     /// Last accepted clock value, for teardown paths that take no `now`.
     clock: u64,
+    dns_policy: Option<DomainPolicy>,
+    dns_ports: BTreeSet<u16>,
     protector: P,
 }
 impl<P: TcpSocketProtector> TcpRelay<P> {
@@ -389,6 +490,8 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             round_robin: VecDeque::new(),
             resets: VecDeque::new(),
             clock: 0,
+            dns_policy: None,
+            dns_ports: BTreeSet::new(),
             protector,
         })
     }
@@ -457,6 +560,9 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     ) -> Result<Flow, Error> {
         let mut flow = Flow::new(id, self.config, now)?;
         flow.context = context;
+        if self.dns_policy.is_some() && self.dns_ports.contains(&id.destination_port) {
+            flow.dns = Some(dns_stream::DnsStream::new());
+        }
         flow.device.rx = Some(bytes.to_vec());
         flow.stack_poll(now);
         if flow.sockets.get::<StackSocket>(flow.handle).state() != State::SynReceived {
@@ -593,7 +699,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
                     report.connect_timeouts += 1;
                 } else if pump {
                     flow.dirty = false;
-                    if flow.pump().is_err() {
+                    if flow.pump(self.dns_policy.as_ref()).is_err() {
                         flow.abort(now);
                         report.io_failures += 1;
                     }
@@ -744,6 +850,37 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         default: Action,
     ) -> Result<(), PolicyError> {
         self.engine.update_context_policy(rules, default)?;
+        self.reset_network();
+        Ok(())
+    }
+    /// Filter DNS-over-TCP on the given destination ports: both stream directions are gated on
+    /// complete length-prefixed frames, query and answer names must be allowed by `policy` and
+    /// answers must match an outstanding question (see DNS_POLICY.md). Existing flows are reset.
+    /// Rejects an invalid port set or a memory budget that cannot also hold the per-DNS-flow
+    /// inspection buffers; disable with `(None, vec![])`.
+    pub fn set_dns_filter(
+        &mut self,
+        policy: Option<DomainPolicy>,
+        ports: Vec<u16>,
+    ) -> Result<(), Error> {
+        if ports.len() > 32 || ports.contains(&0) || policy.is_some() == ports.is_empty() {
+            return Err(Error::Config);
+        }
+        let count = ports.len();
+        let ports: BTreeSet<_> = ports.into_iter().collect();
+        if ports.len() != count {
+            return Err(Error::Config);
+        }
+        if policy.is_some() {
+            let per_flow = self.config.buffer_bytes * 3
+                + (self.config.output_slots + 1) * self.config.mtu
+                + dns_stream::STAGE_MAX;
+            if self.config.max_flows.saturating_mul(per_flow) > self.config.buffer_budget {
+                return Err(Error::Config);
+            }
+        }
+        self.dns_policy = policy;
+        self.dns_ports = ports;
         self.reset_network();
         Ok(())
     }

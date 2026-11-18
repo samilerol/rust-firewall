@@ -50,6 +50,6 @@ The first hosted comparison exposed a bulk-drain regression from per-entry tree/
 
 ## Optional DNS guard
 
-set_dns_filter activates bounded classic question parsing/domain policy only on selected destination ports. It retains at most one query per existing flow, accepts identical retries and rejects conflicting concurrent questions. Pending IDs/questions must match responses and are consumed/cleared with socket lifecycle. Domain allow never overrides engine policy. See DNS_POLICY.md; unselected ports, encrypted/TCP DNS and alias-chain/domain-to-IP controls are out of scope.
+set_dns_filter activates bounded classic question parsing/domain policy only on selected destination ports. It retains up to 8 outstanding questions per flow, each with its own lifetime, accepts identical retries (refreshing the entry) and returns Busy for a ninth distinct question. A response must match one outstanding (ID, question), which is consumed alone; entries clear with the socket lifecycle. Domain allow never overrides engine policy. See DNS_POLICY.md; unselected ports, encrypted DNS, TCP DNS on non-selected ports (selected ports are filtered by `TcpRelay::set_dns_filter`) and alias-chain/domain-to-IP controls are out of scope.
 
 The TCP relay now supplies an independently bounded smoltcp virtual endpoint plus protected OS stream. TCP-specific lifecycle/budgets and DNS limitations are in TCP_TRANSPORT.md. The UDP API/guard remain separate. Shared endpoint checks now reject unspecified/multicast/broadcast sources as well as destination aliases before socket creation.

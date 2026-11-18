@@ -1452,3 +1452,263 @@ fn quotas_larger_than_the_flow_cap_are_rejected_at_construction() {
         ));
     }
 }
+fn dns_message(name: &str, id: u16, response: bool) -> Vec<u8> {
+    let mut b = vec![0; 12];
+    b[..2].copy_from_slice(&id.to_be_bytes());
+    b[2] = if response { 0x81 } else { 1 };
+    b[3] = if response { 0x80 } else { 0 };
+    b[5] = 1;
+    for label in name.split('.') {
+        b.push(label.len() as u8);
+        b.extend_from_slice(label.as_bytes());
+    }
+    b.extend_from_slice(&[0, 0, 1, 0, 1]);
+    b
+}
+fn dns_frame(message: &[u8]) -> Vec<u8> {
+    let mut out = (message.len() as u16).to_be_bytes().to_vec();
+    out.extend_from_slice(message);
+    out
+}
+fn dns_filter() -> netscope_dns::DomainPolicy {
+    use netscope_dns::{DomainName, DomainPolicy, Match, Rule as DomainRule};
+    DomainPolicy::new(
+        vec![DomainRule {
+            name: DomainName::new("blocked.example").unwrap(),
+            kind: Match::Exact,
+            priority: 0,
+            action: Action::Deny,
+        }],
+        Action::Allow,
+    )
+    .unwrap()
+}
+fn dns_relay(port: u16) -> TcpRelay<Protector> {
+    let (mut r, _) = relay(Action::Allow, false);
+    r.set_dns_filter(Some(dns_filter()), vec![port]).unwrap();
+    r
+}
+/// Drive a client that sends `request` and collects up to `expect` reply bytes; stops early when
+/// the relay resets it. Returns what it received, whether it was reset and the relay's I/O failures.
+fn dns_client(
+    client: &mut Client,
+    r: &mut TcpRelay<Protector>,
+    request: &[u8],
+    expect: usize,
+) -> (Vec<u8>, bool, usize) {
+    let (mut sent, mut received, mut failures, mut now) = (0, Vec::new(), 0, 0u64);
+    let start = Wall::now();
+    let mut reset = false;
+    while start.elapsed() < Duration::from_secs(6) {
+        failures += client.step(r, now).io_failures;
+        let socket = client.sockets.get_mut::<StackSocket>(client.handle);
+        if socket.can_send() && sent < request.len() {
+            sent += socket.send_slice(&request[sent..]).unwrap();
+        }
+        if socket.can_recv() {
+            socket
+                .recv(|bytes| {
+                    received.extend_from_slice(bytes);
+                    (bytes.len(), ())
+                })
+                .unwrap();
+        }
+        if expect > 0 && received.len() >= expect {
+            break;
+        }
+        if now > 10 && socket.state() == State::Closed {
+            reset = true;
+            break;
+        }
+        now += 5;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    (received, reset, failures)
+}
+#[test]
+fn dns_over_tcp_forwards_allowed_concurrent_questions_and_delivers_whole_frames() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let (a, aaaa) = (
+        dns_frame(&dns_message("ok.example", 1, false)),
+        dns_frame(&dns_message("ok.example", 2, false)),
+    );
+    let (answer_a, answer_aaaa) = (
+        dns_frame(&dns_message("ok.example", 1, true)),
+        dns_frame(&dns_message("ok.example", 2, true)),
+    );
+    let server = {
+        let (a, aaaa, answer_a, answer_aaaa) = (
+            a.clone(),
+            aaaa.clone(),
+            answer_a.clone(),
+            answer_aaaa.clone(),
+        );
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut got = vec![0; a.len() + aaaa.len()];
+            stream.read_exact(&mut got).unwrap();
+            assert_eq!(&got[..a.len()], &a[..]);
+            assert_eq!(&got[a.len()..], &aaaa[..]);
+            // Answer the second question first, then split the first answer across two writes.
+            stream.write_all(&answer_aaaa).unwrap();
+            stream.write_all(&answer_a[..5]).unwrap();
+            std::thread::sleep(Duration::from_millis(40));
+            stream.write_all(&answer_a[5..]).unwrap();
+        })
+    };
+    let mut r = dns_relay(endpoint.port());
+    let mut client = Client::new(endpoint);
+    let mut request = a.clone();
+    request.extend_from_slice(&aaaa);
+    let expect = answer_a.len() + answer_aaaa.len();
+    let (received, reset, failures) = dns_client(&mut client, &mut r, &request, expect);
+    assert!(!reset && failures == 0);
+    let mut expected = answer_aaaa.clone();
+    expected.extend_from_slice(&answer_a);
+    assert_eq!(received, expected, "whole frames, in the server's order");
+    server.join().unwrap();
+}
+#[test]
+fn dns_over_tcp_blocked_name_resets_the_client_and_never_reaches_the_server() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut buffer = [0; 64];
+        // Either EOF or a reset, but never any query bytes.
+        matches!(stream.read(&mut buffer), Ok(0) | Err(_))
+    });
+    let mut r = dns_relay(endpoint.port());
+    let mut client = Client::new(endpoint);
+    let query = dns_frame(&dns_message("blocked.example", 7, false));
+    let (received, reset, failures) = dns_client(&mut client, &mut r, &query, 0);
+    assert!(reset && received.is_empty());
+    assert_eq!(failures, 1);
+    assert!(
+        server.join().unwrap(),
+        "server must not receive the denied query"
+    );
+}
+#[test]
+fn dns_over_tcp_unmatched_or_truncated_answers_never_reach_the_client() {
+    for truncate in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        let query = dns_frame(&dns_message("ok.example", 5, false));
+        let expected_query = query.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut got = vec![0; expected_query.len()];
+            stream.read_exact(&mut got).unwrap();
+            if truncate {
+                // Half of a correct answer, then EOF.
+                let answer = dns_frame(&dns_message("ok.example", 5, true));
+                stream.write_all(&answer[..answer.len() - 3]).unwrap();
+            } else {
+                // Wrong transaction id.
+                stream
+                    .write_all(&dns_frame(&dns_message("ok.example", 6, true)))
+                    .unwrap();
+            }
+        });
+        let mut r = dns_relay(endpoint.port());
+        let mut client = Client::new(endpoint);
+        let (received, reset, failures) = dns_client(&mut client, &mut r, &query, 0);
+        assert!(reset && received.is_empty(), "truncate={truncate}");
+        assert_eq!(failures, 1, "truncate={truncate}");
+        server.join().unwrap();
+    }
+}
+#[test]
+fn dns_filter_configuration_is_validated_and_only_applies_to_selected_ports() {
+    let (mut r, _) = relay(Action::Allow, false);
+    assert!(r.set_dns_filter(Some(dns_filter()), vec![]).is_err());
+    assert!(r.set_dns_filter(None, vec![53]).is_err());
+    assert!(r.set_dns_filter(Some(dns_filter()), vec![0]).is_err());
+    assert!(r.set_dns_filter(Some(dns_filter()), vec![53, 53]).is_err());
+    // The per-DNS-flow inspection buffers must fit the memory budget.
+    let tight = Config {
+        buffer_budget: relay_budget(&config()),
+        ..config()
+    };
+    let mut tight = TcpRelay::new(
+        Policy::new(vec![], Action::Allow).unwrap(),
+        tight,
+        Protector {
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail: false,
+        },
+    )
+    .unwrap();
+    assert!(tight.set_dns_filter(Some(dns_filter()), vec![53]).is_err());
+    r.set_dns_filter(Some(dns_filter()), vec![53]).unwrap();
+    r.set_dns_filter(None, vec![]).unwrap();
+    // A flow to a non-selected port is a plain stream: arbitrary bytes pass untouched.
+    echo(
+        "127.0.0.1:0",
+        b"not dns at all".to_vec(),
+        false,
+        Drive::Poll,
+    );
+}
+fn relay_budget(cfg: &Config) -> usize {
+    cfg.max_flows * (cfg.buffer_bytes * 2 + (cfg.output_slots + 1) * cfg.mtu)
+}
+#[test]
+fn dns_over_tcp_holds_a_partial_frame_until_it_is_complete() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let mut r = dns_relay(endpoint.port());
+    let mut client = Client::new(endpoint);
+    for now in 0..4 {
+        client.step(&mut r, now);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(client_state(&client), State::Established);
+    let (mut server, _) = listener.accept().unwrap();
+    server.set_nonblocking(true).unwrap();
+    let frame = dns_frame(&dns_message("ok.example", 3, false));
+    let send = |client: &mut Client, bytes: &[u8]| {
+        client
+            .sockets
+            .get_mut::<StackSocket>(client.handle)
+            .send_slice(bytes)
+            .unwrap();
+    };
+    // Only the length prefix and part of the message: nothing may reach the server.
+    send(&mut client, &frame[..5]);
+    let mut got = Vec::new();
+    for now in 4..20 {
+        client.step(&mut r, now);
+        let mut buffer = [0; 64];
+        match server.read(&mut buffer) {
+            Ok(n) if n > 0 => got.extend_from_slice(&buffer[..n]),
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(got.is_empty(), "partial frame leaked upstream: {got:?}");
+    send(&mut client, &frame[5..]);
+    let start = Wall::now();
+    let mut now = 20;
+    while got.len() < frame.len() && start.elapsed() < Duration::from_secs(3) {
+        client.step(&mut r, now);
+        let mut buffer = [0; 64];
+        if let Ok(n) = server.read(&mut buffer) {
+            got.extend_from_slice(&buffer[..n]);
+        }
+        now += 1;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(got, frame);
+}

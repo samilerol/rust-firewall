@@ -57,8 +57,8 @@ See [engine/transport contracts](docs/ENGINE_TRANSPORT.md). APK/UI work is pause
 
 ## Classic DNS/domain policy
 
-`netscope-dns` adds bounded compression/EDNS/message parsing and exact/subdomain rules. Enable it explicitly on selected UDP destination ports with `UdpRelay::set_dns_filter`; allowed names still require packet policy allow. Replies must match one pending transaction/question per flow. See [DNS scope and limits](docs/DNS_POLICY.md): this does not inspect DoH/DoT, TCP DNS, aliases or direct IP access, and is not DNSSEC validation. APK/UI remains paused.
+`netscope-dns` adds bounded compression/EDNS/message parsing and exact/subdomain rules. Enable it explicitly on selected UDP destination ports with `UdpRelay::set_dns_filter`; allowed names still require packet policy allow. Up to 8 concurrent questions per flow are matched by transaction/question. `TcpRelay::set_dns_filter` applies the same domain policy to DNS over TCP on selected ports. See [DNS scope and limits](docs/DNS_POLICY.md): this does not inspect DoH/DoT, aliases or direct IP access, and is not DNSSEC validation. APK/UI remains paused.
 
 ## Experimental TCP software path
 
-`netscope_transport::tcp::TcpRelay` connects raw IPv4/IPv6 TCP to caller-protected nonblocking OS streams using smoltcp. It has bounded flow/stream/packet budgets, partial-write backpressure, half-close handling and explicit clock/connect/idle limits. See [TCP contracts](docs/TCP_TRANSPORT.md). TCP DNS/encrypted-domain filtering and platform integration are not implemented. APK/UI remains paused.
+`netscope_transport::tcp::TcpRelay` connects raw IPv4/IPv6 TCP to caller-protected nonblocking OS streams using smoltcp. It has bounded flow/stream/packet budgets, partial-write backpressure, half-close handling and explicit clock/connect/idle limits. See [TCP contracts](docs/TCP_TRANSPORT.md). Opt-in DNS-over-TCP filtering exists on selected ports; encrypted-domain filtering and platform integration are not implemented. APK/UI remains paused.

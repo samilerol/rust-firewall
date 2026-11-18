@@ -33,7 +33,7 @@ Expiry, network reset, valid IP-policy changes and valid DNS-filter changes clea
 ## Boundaries and limitations
 
 - No CNAME/HTTPS/SVCB alias-chain blocking, response address/CIDR pinning, DNS rebinding defense or IP cache derived from DNS. Valid answer target names may be parsed for structural safety but domain blocking is based on the question only.
-- No encrypted DoH/DoT/DoQ inspection, TCP DNS parsing, resolver-authentication or certificate handling. DNS on unselected ports and direct IP access are outside this filter; ordinary packet policy remains in force. Do not claim this prevents all DNS bypass or DNS leaks.
+- No encrypted DoH/DoT/DoQ inspection, resolver-authentication or certificate handling. DNS over TCP is filtered separately and only on ports selected with `TcpRelay::set_dns_filter` (see TCP_TRANSPORT.md); this UDP guard does not see TCP. DNS on unselected ports and direct IP access are outside this filter; ordinary packet policy remains in force. Do not claim this prevents all DNS bypass or DNS leaks.
 - Connected peers, transaction matching and checksums are not cryptographic authentication. DNSSEC/AD bits, Cookies and signatures are not verified. Original payloads remain unchanged so a client's own DNS validation can still apply.
 - Pending question names are local ephemeral state only; no DNS history, logging, telemetry, persistence or cloud service is added. The library does not claim a universal OS memory byte budget.
 - APK/UI remains paused. Android diagnostic is not integrated with the relay/filter, and no device/leak/battery claim follows from host loopback tests.
