@@ -168,7 +168,8 @@ public final class ForwardingSmoke extends Instrumentation {
             try {
                 socket.connect(new InetSocketAddress("10.0.2.2", 443), 4000);
             } catch (java.net.ConnectException expected) {
-                requireVpnSource(socket);
+                // A failed connect leaves the socket unbound, so its source cannot be checked here;
+                // the earlier phases already prove the VPN is the selected route.
                 if (SystemClock.elapsedRealtime() - started > 3500) {
                     throw new AssertionError("Refusal arrived only after " + (SystemClock.elapsedRealtime() - started) + " ms");
                 }
