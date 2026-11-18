@@ -23,9 +23,14 @@ WATCH="${WATCH_SECONDS:-60}"
 OUT="${OUT_DIR:-/tmp/netscope-device}"
 PKG=org.netscope.ngfw
 mkdir -p "$OUT"
+# Keep a timestamped trace on disk so a hung or killed run still leaves evidence of where it stopped.
+exec > >(tee -a "$OUT/probe.log") 2>&1
+PS4='+ [${SECONDS}s] '
+set -x
 
+# Every adb call is bounded (ADB_TIMEOUT seconds, default 120) so a stuck device cannot hang the job.
 adb() {
-    if [[ -n "${ADB_SERIAL:-}" ]]; then "$ADB_BIN" -s "$ADB_SERIAL" "$@"; else "$ADB_BIN" "$@"; fi
+    if [[ -n "${ADB_SERIAL:-}" ]]; then timeout "${ADB_TIMEOUT:-120}" "$ADB_BIN" -s "$ADB_SERIAL" "$@"; else timeout "${ADB_TIMEOUT:-120}" "$ADB_BIN" "$@"; fi
 }
 # Best effort: record the command's output and its exit status, never abort the probe.
 note() {
@@ -34,8 +39,8 @@ note() {
     { echo "\$ $*"; "$@" 2>&1; echo "[exit $?]"; } >>"$OUT/$file" || true
 }
 
-"$ADB_BIN" devices -l | tee "$OUT/devices.txt"
-count=$("$ADB_BIN" devices | awk 'NR>1 && $2=="device"' | wc -l)
+timeout 20 "$ADB_BIN" devices -l | tee "$OUT/devices.txt"
+count=$(timeout 20 "$ADB_BIN" devices | awk 'NR>1 && $2=="device"' | wc -l)
 if [[ -z "${ADB_SERIAL:-}" && "$count" -ne 1 ]]; then
     echo "Expected exactly one authorized device, found $count (set ADB_SERIAL, or fix 'unauthorized')." >&2
     exit 3
