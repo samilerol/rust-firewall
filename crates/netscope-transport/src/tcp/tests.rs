@@ -429,6 +429,7 @@ fn packet_queue_backpressure_is_bounded_and_does_not_duplicate_socket() {
     r.ingest(&syn, 0).unwrap();
     assert!(matches!(r.ingest(&syn, 0), Err(Error::Backpressure)));
     assert_eq!(r.buffers().queued_packets, 2);
+    settle(&mut r, 0);
     assert!(r.next_packet(0).unwrap().is_some());
     r.poll(1).unwrap();
     assert!(r.buffers().queued_packets <= 2);
@@ -504,6 +505,7 @@ fn idle_expiry_and_response_policy_are_enforced_during_handshake() {
     .unwrap();
     let mut fresh = Client::new(listener.local_addr().unwrap());
     r.ingest(&fresh.syn(), 0).unwrap();
+    settle(&mut r, 0);
     assert!(matches!(
         r.next_packet(0),
         Err(Error::Dropped(DropReason::Policy { .. }))
@@ -517,6 +519,7 @@ fn accepted_client_reset_releases_half_open_upstream_immediately() {
     let mut client = Client::new(listener.local_addr().unwrap());
     let (mut r, _) = relay(Action::Allow, false);
     r.ingest(&client.syn(), 0).unwrap();
+    settle(&mut r, 0);
     let synack = r.next_packet(0).unwrap().unwrap();
     client.device.rx = Some(synack);
     client.poll(0);
@@ -749,6 +752,7 @@ fn policy_denied_response_resets_the_client_after_the_error() {
     )
     .unwrap();
     r.ingest(&client.syn(), 0).unwrap();
+    settle(&mut r, 0);
     assert!(matches!(
         r.next_packet(0),
         Err(Error::Dropped(DropReason::Policy { .. }))
@@ -769,4 +773,71 @@ fn queued_resets_are_bounded() {
         queue_reset(&mut r.resets, limit, Some(vec![0; 40]));
     }
     assert_eq!(r.resets.len(), limit);
+}
+/// Poll until no upstream connect is pending (the OS may finish it a moment after `connect`).
+fn settle(r: &mut TcpRelay<Protector>, now: u64) {
+    let deadline = Wall::now() + Duration::from_secs(2);
+    while r.flows.values().any(|f| f.connecting && !f.failed) {
+        assert!(Wall::now() < deadline, "upstream connect never completed");
+        r.poll(now).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+#[test]
+fn syn_ack_is_withheld_until_the_upstream_connect_completes() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = Client::new(listener.local_addr().unwrap());
+    let (mut r, _) = relay(Action::Allow, false);
+    let id = r.ingest(&client.syn(), 0).unwrap();
+    r.flows.get_mut(&id).unwrap().connecting = true; // deterministic model of a pending connect
+    assert!(r.next_packet(0).unwrap().is_none(), "SYN-ACK must be held");
+    assert_eq!(r.buffers().queued_packets, 1);
+    settle(&mut r, 0); // the real connection completes and the pump observes it
+    let synack = r.next_packet(0).unwrap().expect("released SYN-ACK");
+    let tcp = TcpPacket::new_checked(&synack[20..]).unwrap();
+    assert!(tcp.syn() && tcp.ack());
+    client.device.rx = Some(synack);
+    client.poll(0);
+    assert_eq!(client_state(&client), State::Established);
+}
+#[test]
+fn refused_upstream_never_shows_the_client_an_established_connection() {
+    let bound = Socket::new(Domain::IPV4, Type::STREAM, Some(OsProtocol::TCP)).unwrap();
+    bound
+        .bind(&"127.0.0.1:0".parse::<SocketAddr>().unwrap().into())
+        .unwrap();
+    let mut client = Client::new(bound.local_addr().unwrap().as_socket().unwrap());
+    let (mut r, _) = relay(Action::Allow, false);
+    let syn = client.syn();
+    let mut seen = Vec::new();
+    // Drain before every poll so a SYN-ACK that was merely discarded later cannot hide.
+    let mut drain = |r: &mut TcpRelay<Protector>, now: u64| {
+        while let Some(bytes) = r.next_packet(now).unwrap() {
+            let tcp = TcpPacket::new_checked(&bytes[20..]).unwrap();
+            assert!(!tcp.syn(), "a refused connection must never be SYN-ACKed");
+            seen.push(tcp.rst());
+            client.device.rx = Some(bytes);
+            client.poll(now);
+        }
+    };
+    let mut now = 0;
+    match r.ingest(&syn, now) {
+        Err(Error::Io(_)) => {} // refused immediately: RST was queued for the SYN
+        Ok(_) => {
+            let deadline = Wall::now() + Duration::from_secs(2);
+            loop {
+                drain(&mut r, now);
+                if r.poll(now).unwrap().io_failures > 0 {
+                    break;
+                }
+                assert!(Wall::now() < deadline, "refusal never observed");
+                now += 1;
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        Err(error) => panic!("unexpected refusal path: {error:?}"),
+    }
+    drain(&mut r, now);
+    assert_eq!(seen, [true]);
+    assert_eq!(client_state(&client), State::Closed);
 }

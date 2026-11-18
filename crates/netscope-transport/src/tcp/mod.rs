@@ -506,6 +506,11 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             let Some(flow) = self.flows.get_mut(&id) else {
                 continue;
             };
+            // Hold the SYN-ACK until the upstream connect completes: the client must not see an
+            // established connection that the upstream refused. A failed flow still releases its RST.
+            if flow.connecting && !flow.failed {
+                continue;
+            }
             let Some(bytes) = flow.device.tx.pop_front() else {
                 continue;
             };
