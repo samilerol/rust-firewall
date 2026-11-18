@@ -262,34 +262,32 @@ impl<P: SocketProtector> UdpRelay<P> {
     /// ready flows. Call `receive` on each until it reports `WouldBlock`. `now` and the engine
     /// timeout are interpreted as milliseconds here. An empty list means timeout or a signal.
     /// Uses level-triggered `poll(2)` through a safe wrapper: cost is linear in open flows.
+    /// To wait on TCP and UDP together use `event::wait_ready`.
     #[cfg(unix)]
     pub fn wait_ready(&mut self, now: u64, max_wait: Duration) -> Result<Vec<FlowId>, RelayError> {
-        use rustix::event::{poll, PollFd, PollFlags, Timespec};
         self.expire(now)?;
-        let wait = self.engine.next_expiry().map_or(max_wait, |due| {
-            max_wait.min(Duration::from_millis(due.saturating_sub(now)))
-        });
-        let mut ids = Vec::with_capacity(self.sockets.len());
-        let mut fds = Vec::with_capacity(self.sockets.len());
-        for (id, socket) in &self.sockets {
-            ids.push(*id);
-            fds.push(PollFd::new(socket, PollFlags::IN));
-        }
-        let timeout = Timespec {
-            tv_sec: wait.as_secs().min(i64::MAX as u64) as i64,
-            tv_nsec: i64::from(wait.subsec_nanos()),
-        };
-        match poll(&mut fds, Some(&timeout)) {
-            Ok(_) => {}
-            Err(rustix::io::Errno::INTR) => return Ok(Vec::new()),
-            Err(error) => return Err(RelayError::Io(error.into())),
-        }
-        Ok(fds
+        let wait = event::bounded_wait(now, max_wait, &[self.next_wakeup()]);
+        let entries = self.poll_entries();
+        let ready = event::poll_entries(&entries, wait)?;
+        Ok(entries
             .iter()
-            .zip(ids)
-            .filter(|(fd, _)| !fd.revents().is_empty())
-            .map(|(_, id)| id)
+            .zip(ready)
+            .filter(|(_, ready)| *ready)
+            .map(|((id, _, _), _)| *id)
             .collect())
+    }
+    /// Earliest tick at which the oldest flow's idle lease ends (milliseconds for the wait APIs).
+    #[cfg(unix)]
+    pub fn next_wakeup(&self) -> Option<u64> {
+        self.engine.next_expiry()
+    }
+    #[cfg(unix)]
+    pub(crate) fn poll_entries(&self) -> Vec<event::Entry<'_>> {
+        use std::os::fd::AsFd;
+        self.sockets
+            .iter()
+            .map(|(id, socket)| (*id, socket.as_fd(), rustix::event::PollFlags::IN))
+            .collect()
     }
     /// A valid policy update closes ALL existing UDP sockets/observations; invalid input changes nothing.
     pub fn update_policy(&mut self, rules: Vec<Rule>, default: Action) -> Result<(), PolicyError> {
@@ -335,6 +333,8 @@ impl<P: SocketProtector> UdpRelay<P> {
 }
 
 /// Unix/Android bridge for protecting the actual native sockets owned by Rust.
+#[cfg(unix)]
+pub mod event;
 #[cfg(unix)]
 pub mod fd_protection;
 /// Packet-oriented TCP proxy using a bounded userspace TCP stack and protected upstream streams.

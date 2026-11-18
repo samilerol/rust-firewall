@@ -1098,8 +1098,8 @@ fn wait_ready_blocks_until_upstream_data_or_the_cap_and_never_past_deadlines() {
     assert!(started.elapsed() < Duration::from_secs(3));
     r.poll_ready(5, &ready).unwrap();
     assert_eq!(stack_send_queue(&r, &ready[0]), 4);
-    drop(writer.join().unwrap());
-    // Unprocessed client input makes the wait return immediately.
+    let server = writer.join().unwrap(); // keep the upstream open: a close would wake the wait
+                                         // Unprocessed client input makes the wait return immediately.
     let flow = ready[0];
     r.flows.get_mut(&flow).unwrap().dirty = true;
     let started = Wall::now();
@@ -1115,4 +1115,155 @@ fn wait_ready_blocks_until_upstream_data_or_the_cap_and_never_past_deadlines() {
         started.elapsed() < Duration::from_secs(5),
         "ignored next_wakeup"
     );
+    drop(server);
+}
+struct OpenUdp;
+impl crate::SocketProtector for OpenUdp {
+    fn protect(&self, _: &std::net::UdpSocket) -> io::Result<()> {
+        Ok(())
+    }
+}
+/// Reference single-threaded TUN loop: packets the apps write are dispatched by protocol to the
+/// two relays, ONE combined wait blocks until an upstream is ready or a deadline is due, then both
+/// relays are serviced and their output goes back to the apps. The TUN is two in-memory queues
+/// and the app side is a real TCP stack plus a hand-built UDP datagram.
+#[test]
+fn a_single_threaded_tun_loop_serves_tcp_and_udp_through_one_combined_wait() {
+    use netscope_packet::{parse, udp};
+    let tcp_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp_endpoint = tcp_listener.local_addr().unwrap();
+    let payload: Vec<u8> = (0..20_000).map(|i| (i % 251) as u8).collect();
+    let expected = payload.clone();
+    let tcp_server = std::thread::spawn(move || {
+        let (mut stream, _) = tcp_listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).unwrap();
+        assert_eq!(received, expected);
+        stream.write_all(&received).unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+    });
+    let udp_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    udp_socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let udp_endpoint = udp_socket.local_addr().unwrap();
+    let udp_server = std::thread::spawn(move || {
+        let mut buffer = [0; 64];
+        let (n, peer) = udp_socket.recv_from(&mut buffer).unwrap();
+        udp_socket.send_to(&buffer[..n], peer).unwrap();
+    });
+
+    let (mut tcp, _) = relay(Action::Allow, false);
+    let mut udp_relay = crate::UdpRelay::new(
+        Policy::new(vec![], Action::Allow).unwrap(),
+        EngineConfig {
+            max_flows: 2,
+            timeout: 30_000,
+            checksums: ChecksumPolicy::Require,
+        },
+        1500,
+        OpenUdp,
+    )
+    .unwrap();
+    let mut client = Client::new(tcp_endpoint);
+    let mut from_apps: VecDeque<Vec<u8>> = VecDeque::new();
+    from_apps
+        .push_back(udp::encode("192.0.2.1:5353".parse().unwrap(), udp_endpoint, b"dgram").unwrap());
+    let mut to_apps: VecDeque<Vec<u8>> = VecDeque::new();
+    let (mut sent, mut closed, mut received, mut udp_reply) = (0, false, Vec::new(), None);
+    let (mut tcp_events, mut udp_events) = (0, 0);
+    let start = Wall::now();
+    let mut finished = false;
+    while start.elapsed() < Duration::from_secs(8) {
+        let now = start.elapsed().as_millis() as u64;
+        // Apps: deliver what the relays produced, then let the TCP stack talk.
+        while let Some(bytes) = to_apps.pop_front() {
+            match parse(&bytes).unwrap().protocol {
+                Protocol::Tcp => {
+                    assert!(client.device.rx.is_none());
+                    client.device.rx = Some(bytes);
+                    client.poll(now);
+                }
+                Protocol::Udp => udp_reply = Some(bytes),
+            }
+        }
+        client.poll(now);
+        let socket = client.sockets.get_mut::<StackSocket>(client.handle);
+        if socket.can_send() && sent < payload.len() {
+            sent += socket.send_slice(&payload[sent..]).unwrap();
+        }
+        if sent == payload.len() && socket.may_send() && !closed {
+            socket.close();
+            closed = true;
+        }
+        if socket.can_recv() {
+            socket
+                .recv(|bytes| {
+                    received.extend_from_slice(bytes);
+                    (bytes.len(), ())
+                })
+                .unwrap();
+        }
+        let tcp_done = closed && received == payload && !socket.may_recv();
+        client.poll(now);
+        while let Some(bytes) = client.device.tx.pop_front() {
+            from_apps.push_back(bytes);
+        }
+        // TUN reader: dispatch each packet by protocol.
+        while let Some(bytes) = from_apps.pop_front() {
+            match parse(&bytes).unwrap().protocol {
+                Protocol::Tcp => match tcp.ingest(&bytes, now) {
+                    Ok(_) => {}
+                    Err(Error::Backpressure) => {
+                        from_apps.push_front(bytes);
+                        break;
+                    }
+                    Err(error) => panic!("tcp ingest: {error:?}"),
+                },
+                Protocol::Udp => {
+                    udp_relay.send(&bytes, now).unwrap();
+                }
+            }
+        }
+        if tcp_done && udp_reply.is_some() && tcp.flow_count() == 0 {
+            finished = true;
+            break;
+        }
+        // One combined wait, then service both relays.
+        let ready =
+            crate::event::wait_ready(&mut tcp, &mut udp_relay, now, Duration::from_millis(20))
+                .unwrap();
+        tcp_events += ready.tcp.len();
+        udp_events += ready.udp.len();
+        let now = start.elapsed().as_millis() as u64;
+        tcp.poll_ready(now, &ready.tcp).unwrap();
+        for id in ready.udp {
+            loop {
+                match udp_relay.receive(id, now) {
+                    Ok(packet) => to_apps.push_back(packet),
+                    Err(crate::RelayError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("udp receive: {error:?}"),
+                }
+            }
+        }
+        udp_relay.expire(now).unwrap();
+        while let Some(packet) = tcp.next_packet(now).unwrap() {
+            to_apps.push_back(packet);
+        }
+    }
+    assert!(
+        finished,
+        "loop did not finish: sent={sent} received={}",
+        received.len()
+    );
+    assert_eq!(&udp_reply.unwrap()[28..], b"dgram");
+    assert!(
+        tcp_events > 0 && udp_events > 0,
+        "tcp={tcp_events} udp={udp_events}"
+    );
+    tcp_server.join().unwrap();
+    udp_server.join().unwrap();
 }

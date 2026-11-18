@@ -581,44 +581,37 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     /// `poll_ready`. Errors/hangups count as ready so the pump observes them. A signal
     /// interruption returns an empty list. The wait never outlasts the relay's own deadlines,
     /// and returns at once when client input is unprocessed. Uses `poll(2)` through a safe
-    /// wrapper, so cost grows linearly with flows; this is not an epoll registration.
+    /// wrapper, so cost grows linearly with flows; this is not an epoll registration. To wait
+    /// on TCP and UDP together use `event::wait_ready`.
     #[cfg(unix)]
     pub fn wait_ready(&mut self, now: u64, max_wait: Duration) -> Result<Vec<FlowId>, Error> {
-        use rustix::event::{poll, PollFd, PollFlags, Timespec};
         self.maintain(now)?;
-        let wait = self.next_wakeup(now).map_or(max_wait, |due| {
-            max_wait.min(Duration::from_millis(due - now))
-        });
-        let mut ids = Vec::new();
-        let mut fds = Vec::new();
-        for (id, flow) in &self.flows {
-            let interest = flow.interest();
-            let Some(stream) = flow.upstream.as_ref() else {
-                continue;
-            };
-            let mut events = PollFlags::empty();
-            events.set(PollFlags::IN, interest.readable);
-            events.set(PollFlags::OUT, interest.writable);
-            if !events.is_empty() {
-                ids.push(*id);
-                fds.push(PollFd::new(stream, events));
-            }
-        }
-        let timeout = Timespec {
-            tv_sec: wait.as_secs().min(i64::MAX as u64) as i64,
-            tv_nsec: i64::from(wait.subsec_nanos()),
-        };
-        match poll(&mut fds, Some(&timeout)) {
-            Ok(_) => {}
-            Err(rustix::io::Errno::INTR) => return Ok(Vec::new()),
-            Err(error) => return Err(Error::Io(error.into())),
-        }
-        Ok(fds
+        let wait = crate::event::bounded_wait(now, max_wait, &[self.next_wakeup(now)]);
+        let entries = self.poll_entries();
+        let ready = crate::event::poll_entries(&entries, wait)?;
+        Ok(entries
             .iter()
-            .zip(ids)
-            .filter(|(fd, _)| !fd.revents().is_empty())
-            .map(|(_, id)| id)
+            .zip(ready)
+            .filter(|(_, ready)| *ready)
+            .map(|((id, _, _), _)| *id)
             .collect())
+    }
+    /// Upstream streams with the readiness each currently needs.
+    #[cfg(unix)]
+    pub(crate) fn poll_entries(&self) -> Vec<crate::event::Entry<'_>> {
+        use rustix::event::PollFlags;
+        use std::os::fd::AsFd;
+        self.flows
+            .iter()
+            .filter_map(|(id, flow)| {
+                let interest = flow.interest();
+                let stream = flow.upstream.as_ref()?;
+                let mut events = PollFlags::empty();
+                events.set(PollFlags::IN, interest.readable);
+                events.set(PollFlags::OUT, interest.writable);
+                (!events.is_empty()).then(|| (*id, stream.as_fd(), events))
+            })
+            .collect()
     }
     /// Earliest absolute time (ms) at which `poll_ready` has time-driven work: idle expiry,
     /// connect deadline or a stack timer. `Some(now)` when new client input is unprocessed and
