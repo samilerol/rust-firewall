@@ -17,3 +17,5 @@ Implemented: optimized one-record expiry index, compiled precedence, checked Eng
 Classic UDP question parsing/domain policy is implemented with explicit scope in DNS_POLICY.md. Concurrent transactions with independent expiry and DNS over TCP on selected ports now exist. Next DNS work: evaluated alias/rebinding policies and secure resolver/authentication designs. No encrypted-DNS visibility should be assumed.
 
 Experimental TCP relay is implemented with explicit scope in TCP_TRANSPORT.md. Readiness hooks, handshake/per-uid quotas, TCP DNS framing, uid/network context and bounded configuration are implemented; see the status paragraph above for what remains. APK/UI/platform integration remains paused; no device or WAN guarantees are inferred.
+
+Android adapter core: `ForwardingSession` (docs/ANDROID_FORWARDING_SESSION.md) combines both relays and the readiness wait for a single-threaded adapter; JNI/TUN/VpnService wiring and every device test remain open.

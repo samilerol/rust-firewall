@@ -101,3 +101,7 @@ pub mod udp_session;
 
 #[cfg(unix)]
 mod udp_session_jni;
+
+/// Session-scoped TCP+UDP forwarding kernel (no JNI, no TUN ownership); unix only.
+#[cfg(unix)]
+pub mod forwarding_session;
