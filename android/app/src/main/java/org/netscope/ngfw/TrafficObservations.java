@@ -44,8 +44,11 @@ final class TrafficObservations {
         this.connectivity = connectivity;
     }
 
-    void observe(byte[] metadata, int length, int decision) {
-        record(resolve(metadata), length, decision);
+    /** Records the packet and returns the resolved owner uid, or UNKNOWN_UID. */
+    int observe(byte[] metadata, int length, int decision) {
+        int uid = resolve(metadata);
+        record(uid, length, decision);
+        return uid;
     }
 
     private int resolve(byte[] bytes) {

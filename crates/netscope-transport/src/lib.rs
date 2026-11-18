@@ -439,6 +439,10 @@ impl<P: SocketProtector> UdpRelay<P> {
     pub fn flow_count(&self) -> usize {
         self.sockets.len()
     }
+    /// Records the platform-resolved owner uid of an existing flow (informational only).
+    pub fn note_owner(&mut self, id: &FlowId, uid: Option<u32>) -> bool {
+        self.engine.note_owner(id, uid)
+    }
     /// Bounded copy of the engine's tracked flows, newest first. Read-only.
     pub fn flow_snapshot(&self, limit: usize) -> Vec<(FlowId, Observation)> {
         self.engine.flow_snapshot(limit)

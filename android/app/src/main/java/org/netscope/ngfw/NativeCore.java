@@ -11,6 +11,12 @@ public final class NativeCore {
     static native int pollForwarding(long session, byte[] packet);
     static native int stopForwarding(long session);
     /**
+     * Tells the session which uid owns the flow in a 38-byte metadata block. 1 = existing flow
+     * updated, 0 = malformed / negative uid / unknown flow, -1 = stale session or wrong size.
+     * Informational only; it never changes a decision.
+     */
+    static native int noteOwner(long session, byte[] metadata, int uid);
+    /**
      * Fills `out` (exactly 64 * 96 bytes) with up to 64 active-flow records, newest first, and returns
      * the record count, or -1 on a stale session / wrong size. Read-only and informational: it never
      * grants access. Layout: see SNAPSHOT_RECORD_BYTES in forwarding.rs.

@@ -176,6 +176,17 @@ impl Tracker {
         }
         true
     }
+    /// Remembers a resolved owner uid for an existing flow without counting a packet, refreshing
+    /// its lease or touching expiry order. Returns false when the flow is not tracked.
+    pub fn set_uid(&mut self, id: &FlowId, uid: Option<u32>) -> bool {
+        match self.flows.get_mut(id) {
+            Some(flow) => {
+                flow.uid = uid;
+                true
+            }
+            None => false,
+        }
+    }
     /// Copies at most `limit` observations, most recently seen first (ties in `FlowId` order, so
     /// the result is deterministic). Read-only: O(limit) time and allocation, no state change.
     /// Entries past their timeout stay listed until `expire` or `observe` sweeps them.
@@ -457,5 +468,22 @@ mod tests {
         assert!(t.account(&flow(1), Direction::Inbound, u64::MAX, None));
         assert!(t.account(&flow(1), Direction::Inbound, 1, None));
         assert_eq!(t.get(&flow(1)).unwrap().inbound.bytes, u64::MAX);
+    }
+    #[test]
+    fn set_uid_only_updates_an_existing_flow() {
+        let mut t = Tracker::new(4, 100);
+        assert!(!t.set_uid(&flow(1), Some(1)));
+        assert_eq!(t.len(), 0, "set_uid must not create a flow");
+        t.observe(flow(1), 7).unwrap();
+        assert!(t.set_uid(&flow(1), Some(10_001)));
+        let o = *t.get(&flow(1)).unwrap();
+        assert_eq!(o.uid, Some(10_001));
+        assert_eq!(
+            (o.last_seen, o.outbound, o.inbound),
+            (7, Counters::default(), Counters::default())
+        );
+        assert_eq!(t.next_expiry(), Some(107));
+        assert!(t.set_uid(&flow(1), None));
+        assert_eq!(t.get(&flow(1)).unwrap().uid, None);
     }
 }
