@@ -25,6 +25,8 @@ jobs:
         run: cargo +stable deny --locked check advisories licenses sources
       - name: RustSec advisories, licenses and sources for isolated fuzz tools
         run: cargo +stable deny --manifest-path fuzz/Cargo.toml --locked --config deny.toml check advisories licenses sources
+      - name: RustSec advisories, licenses and sources for the isolated UI spike
+        run: cargo +stable deny --manifest-path ui/Cargo.toml --locked --config deny.toml check advisories licenses sources
   android-targets:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
