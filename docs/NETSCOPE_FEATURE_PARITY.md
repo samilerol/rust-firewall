@@ -13,7 +13,7 @@ Status: planning inventory, 2026-11-18. Written in the owner's own words from th
 | 5 | Per-app block while screen is off (60 s delay, lifts on screen on) | Not implemented | New; needs screen-state signal and a bounded timer |
 | 6 | Block newly installed apps until allowed | Not implemented | New; needs install-event handling and default-deny for new UIDs |
 | 7 | Domain blocking with subdomains; blocked DNS answered NXDOMAIN; cut TCP/QUIC to the already-known IP of a blocked domain | DNS question filtering with label-boundary matching exists | NXDOMAIN synthesis and IP-based follow-up cutting are not implemented; QUIC is currently dropped by the fixed profile |
-| 8 | Blocklist subscriptions (hosts/domain lists), suggestions, optional weekly auto-update, allow-list override | Not implemented | Conflicts with "core remains offline" unless made explicit, opt-in and user-initiated; owner decision |
+| 8 | Blocklist subscriptions (hosts/domain lists), suggestions, optional weekly auto-update, allow-list override | Not implemented | Decided (ADR-025): optional, user-initiated, https-only, off by default; automatic updates only behind an explicit switch |
 | 9 | Ordered IP/port rules (app, protocol, CIDR, port range), first match allows or denies | Deterministic policy with CIDR/port rules and bounded policy files (PRs #29, #30) | App dimension and user-facing editor missing |
 | 10 | Decision order: rules, then app block (by network/screen), then domain lists | Not defined | Define and document precedence before wiring the pieces |
 | 11 | Existing connections cut when a block is added | Not specified | Needs flow revocation on policy change (engine has atomic replacement; verify revocation of live flows) |
@@ -24,7 +24,7 @@ Status: planning inventory, 2026-11-18. Written in the owner's own words from th
 | 16 | App lock (device credential on open and after 30 s in background) | Not implemented | New; independent of VPN protection |
 | 17 | Battery-optimization exemption prompt | Not implemented | New; OEM background kill is a real risk on Xiaomi |
 | 18 | UI language Turkish | English strings | Localization decision |
-| 19 | Flutter UI | Temporary framework Java screens | AGENTS.md: Rust-native UI preferred, Flutter requires owner approval. Owner decision |
+| 19 | Flutter UI | Temporary framework Java screens | Decided (ADR-025): Flutter for presentation only; the original Dart UI layer may be ported, the Kotlin engine may not |
 
 ## Suggested order
 
