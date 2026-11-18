@@ -1,5 +1,5 @@
 //! Platform-independent checked packet admission. Admission does not implement TCP state or I/O.
-use netscope_conntrack::{FlowId, TrackError, Tracker};
+use netscope_conntrack::{FlowId, Observation, TrackError, Tracker};
 use netscope_packet::{parse_checked, ChecksumPolicy, Packet, ParseError};
 use netscope_policy::{Action, Context, ContextRule, Decision, Policy, PolicyError, Rule};
 
@@ -170,6 +170,10 @@ impl Engine {
     /// Tick at which the oldest tracked flow expires; lets a caller sleep until then.
     pub fn next_expiry(&self) -> Option<u64> {
         self.flows.next_expiry()
+    }
+    /// Bounded copy of the tracked flows, newest first; see `Tracker::snapshot`.
+    pub fn flow_snapshot(&self, limit: usize) -> Vec<(FlowId, Observation)> {
+        self.flows.snapshot(limit)
     }
     pub fn flow_count(&self) -> usize {
         self.flows.len()

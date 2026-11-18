@@ -133,6 +133,17 @@ impl Tracker {
         self.order.clear();
         count
     }
+    /// Copies at most `limit` observations, most recently seen first (ties in `FlowId` order, so
+    /// the result is deterministic). Read-only: O(limit) time and allocation, no state change.
+    /// Entries past their timeout stay listed until `expire` or `observe` sweeps them.
+    pub fn snapshot(&self, limit: usize) -> Vec<(FlowId, Observation)> {
+        self.order
+            .iter()
+            .rev()
+            .filter_map(|(_, id)| self.flows.get(id).map(|flow| (*id, *flow)))
+            .take(limit)
+            .collect()
+    }
     pub fn get(&self, id: &FlowId) -> Option<&Observation> {
         self.flows.get(id)
     }
@@ -340,5 +351,34 @@ mod tests {
             t.expire_with(11, |_| panic!("reversed clock cannot emit removals")),
             Err(TrackError::ClockReversed)
         );
+    }
+    #[test]
+    fn snapshot_is_newest_first_bounded_and_read_only() {
+        let mut t = Tracker::new(8, 100);
+        t.observe(flow(1), 1).unwrap();
+        t.observe(flow(2), 2).unwrap();
+        t.observe(flow(3), 3).unwrap();
+        t.observe(flow(1), 4).unwrap(); // refresh moves flow 1 to the front
+        let all = t.snapshot(10);
+        let ports: Vec<u16> = all.iter().map(|(id, _)| id.source_port).collect();
+        assert_eq!(ports, [1, 3, 2]);
+        assert_eq!(all[0].1.created_at, 1);
+        assert_eq!(all[0].1.last_seen, 4);
+        assert_eq!(t.snapshot(2).len(), 2);
+        assert!(t.snapshot(0).is_empty());
+        assert_eq!(t.len(), 3);
+        assert_eq!(t.snapshot(10), all, "snapshot must not change state");
+    }
+    #[test]
+    fn snapshot_ties_are_deterministic_and_removed_flows_disappear() {
+        let mut t = Tracker::new(8, 100);
+        t.observe(flow(9), 5).unwrap();
+        t.observe(flow(3), 5).unwrap();
+        let ports: Vec<u16> = t.snapshot(8).iter().map(|(id, _)| id.source_port).collect();
+        assert_eq!(ports, [9, 3]);
+        t.remove(&flow(9));
+        assert_eq!(t.snapshot(8).len(), 1);
+        t.clear();
+        assert!(t.snapshot(8).is_empty());
     }
 }
