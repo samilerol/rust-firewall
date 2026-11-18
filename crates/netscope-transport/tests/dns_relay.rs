@@ -3,7 +3,7 @@ use netscope_dns::{DomainName, DomainPolicy, Match, Rule};
 use netscope_engine::{Config, DropReason};
 use netscope_packet::{udp, ChecksumPolicy};
 use netscope_policy::{Action, Policy};
-use netscope_transport::{DnsError, RelayError, SocketProtector, UdpRelay};
+use netscope_transport::{DnsError, RelayError, SocketProtector, UdpRelay, MAX_DNS_PENDING};
 use std::{
     io,
     net::{SocketAddr, UdpSocket},
@@ -175,7 +175,7 @@ fn wrong_id_wrong_question_and_query_as_response_are_rejected() {
     }
 }
 #[test]
-fn retransmission_is_bounded_and_distinct_concurrent_question_is_busy() {
+fn retransmission_is_bounded_and_distinct_concurrent_questions_have_a_limit() {
     let s = server("127.0.0.1:0");
     let endpoint = s.local_addr().unwrap();
     let (mut r, calls) = relay(endpoint, Action::Allow);
@@ -183,15 +183,23 @@ fn retransmission_is_bounded_and_distinct_concurrent_question_is_busy() {
     let sent = r.send(&datagram(endpoint, &q), 0).unwrap();
     r.send(&datagram(endpoint, &q), 0).unwrap();
     assert_eq!(r.pending_dns_count(), 1);
+    // Distinct questions on the same flow are concurrent (e.g. A and AAAA) up to the limit.
+    for id in 2..=MAX_DNS_PENDING as u16 {
+        r.send(&datagram(endpoint, &query("safe.example", id)), 0)
+            .unwrap();
+    }
+    assert_eq!(r.pending_dns_count(), MAX_DNS_PENDING);
     assert!(matches!(
-        r.send(&datagram(endpoint, &query("safe.example", 2)), 0),
+        r.send(&datagram(endpoint, &query("safe.example", 99)), 0),
         Err(RelayError::Dns(DnsError::Busy))
     ));
+    // A retransmission of an outstanding question is still accepted at the limit.
+    r.send(&datagram(endpoint, &q), 0).unwrap();
+    assert_eq!(r.pending_dns_count(), MAX_DNS_PENDING);
     assert_eq!(r.flow_count(), 1);
-    assert_eq!(r.pending_dns_count(), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(r.set_dns_filter(Some(policy()), vec![]).is_err());
-    assert_eq!(r.pending_dns_count(), 1);
+    assert_eq!(r.pending_dns_count(), MAX_DNS_PENDING);
     assert_eq!(r.expire(10).unwrap(), 1);
     assert_eq!(r.pending_dns_count(), 0);
     assert!(matches!(
@@ -261,4 +269,55 @@ fn a_second_unsolicited_answer_cannot_reuse_consumed_transaction() {
     let (n, peer) = s.recv_from(&mut b).unwrap();
     s.send_to(&response(b[..n].to_vec()), peer).unwrap();
     assert!(receive(&mut r, sent.flow).is_ok());
+}
+#[test]
+fn concurrent_questions_are_answered_in_any_order_and_consumed_one_by_one() {
+    let s = server("127.0.0.1:0");
+    let endpoint = s.local_addr().unwrap();
+    let (mut r, _) = relay(endpoint, Action::Allow);
+    let a = query("safe.example", 10);
+    let aaaa = query("safe.example", 11);
+    let sent = r.send(&datagram(endpoint, &a), 0).unwrap();
+    assert_eq!(
+        r.send(&datagram(endpoint, &aaaa), 0).unwrap().flow,
+        sent.flow
+    );
+    assert_eq!(r.pending_dns_count(), 2);
+    let mut buffer = [0; 1024];
+    let (n, peer) = s.recv_from(&mut buffer).unwrap();
+    let first = buffer[..n].to_vec();
+    let (n, _) = s.recv_from(&mut buffer).unwrap();
+    let second = buffer[..n].to_vec();
+    // The server answers the later question first.
+    s.send_to(&response(second.clone()), peer).unwrap();
+    assert!(receive(&mut r, sent.flow).is_ok());
+    assert_eq!(r.pending_dns_count(), 1);
+    s.send_to(&response(first), peer).unwrap();
+    assert!(receive(&mut r, sent.flow).is_ok());
+    assert_eq!(r.pending_dns_count(), 0);
+    // An answer that is no longer outstanding is discarded without revoking the flow.
+    s.send_to(&response(second), peer).unwrap();
+    assert!(matches!(
+        receive(&mut r, sent.flow),
+        Err(RelayError::Dns(DnsError::Unsolicited))
+    ));
+    assert_eq!(r.flow_count(), 1);
+}
+#[test]
+fn unanswered_questions_expire_independently_and_free_their_slot() {
+    let s = server("127.0.0.1:0");
+    let endpoint = s.local_addr().unwrap();
+    let (mut r, _) = relay(endpoint, Action::Allow); // idle timeout 10, so questions live 10
+    r.send(&datagram(endpoint, &query("safe.example", 1)), 0)
+        .unwrap();
+    r.send(&datagram(endpoint, &query("safe.example", 2)), 6)
+        .unwrap();
+    assert_eq!(r.pending_dns_count(), 2);
+    // At tick 11 the first question (age 11) is gone, the second (age 5) is kept.
+    r.send(&datagram(endpoint, &query("safe.example", 3)), 11)
+        .unwrap();
+    assert_eq!(r.pending_dns_count(), 2);
+    // Expiry of the whole flow still clears everything.
+    assert_eq!(r.expire(30).unwrap(), 1);
+    assert_eq!(r.pending_dns_count(), 0);
 }
