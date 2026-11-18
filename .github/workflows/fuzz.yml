@@ -31,6 +31,8 @@ jobs:
         run: cargo +nightly fuzz run dns -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=4097 -seed=1
       - name: Fuzz deterministic in-memory TCP state and buffers
         run: cargo +nightly fuzz run tcp -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=1500 -seed=1
+      - name: Fuzz bounded policy configuration parser
+        run: cargo +nightly fuzz run policy_config -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=2048 -seed=1
       - name: Ensure dependency resolution stayed locked
         run: git diff --exit-code -- fuzz/Cargo.lock
       - name: Preserve crash reproducers

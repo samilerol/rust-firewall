@@ -1,4 +1,5 @@
 //! Lower numeric priority wins; equal priorities use input order. Default is explicit.
+pub mod config;
 use netscope_packet::{Packet, Protocol};
 use std::{net::IpAddr, ops::RangeInclusive};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

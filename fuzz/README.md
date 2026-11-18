@@ -30,3 +30,5 @@ Dependency metadata was reviewed: fuzz dependencies declare MIT/Apache-2.0 alter
 ## TCP stack target
 
 `cargo +nightly fuzz run tcp -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=1500 -seed=1` enables the transport fuzzing feature and drives deterministic in-memory IPv4/IPv6 smoltcp endpoints with control/sequence/window-pressure patterns plus checked raw TCP parsing. It asserts stream/packet bounds and emitted checksums; no upstream OS socket or OS entropy source is called. OS stream I/O is loopback-test evidence only. CI now runs four targets sequentially after one tool install, each budgeted at 30 seconds.
+
+`cargo +nightly fuzz run policy_config -- -max_total_time=30 -timeout=5 -rss_limit_mb=1024 -max_len=2048 -seed=1` feeds arbitrary bytes to the bounded policy configuration parser and asserts it never panics and reports `TooLarge` above the byte limit. `max_len` keeps inputs small; the unit tests cover the 512 KiB and 4096-rule limits. The target has not been run locally (no nightly/cargo-fuzz here); only its compilation and a 20,000-case deterministic mutation test were run.
