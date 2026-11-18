@@ -4,7 +4,7 @@ mod dns;
 use self::device::Device;
 use crate::{dns_pending::PendingQueries, DnsLimits};
 use dns::{DnsContext, DnsStream};
-use netscope_conntrack::FlowId;
+use netscope_conntrack::{FlowId, Observation};
 use netscope_dns::DomainPolicy;
 use netscope_engine::{Config as EngineConfig, DropReason, Engine, Outcome};
 use netscope_packet::{parse_checked, ChecksumPolicy, Protocol};
@@ -946,6 +946,10 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
 
     pub fn flow_count(&self) -> usize {
         self.flows.len()
+    }
+    /// Bounded copy of the engine's tracked flows, newest first. Read-only.
+    pub fn flow_snapshot(&self, limit: usize) -> Vec<(FlowId, Observation)> {
+        self.engine.flow_snapshot(limit)
     }
     pub fn buffers(&self) -> Buffers {
         let mut used = Buffers::default();

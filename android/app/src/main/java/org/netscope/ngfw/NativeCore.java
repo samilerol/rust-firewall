@@ -10,6 +10,12 @@ public final class NativeCore {
     static native int forwardPacket(long session, byte[] packet, int length, byte[] observation);
     static native int pollForwarding(long session, byte[] packet);
     static native int stopForwarding(long session);
+    /**
+     * Fills `out` (exactly 64 * 96 bytes) with up to 64 active-flow records, newest first, and returns
+     * the record count, or -1 on a stale session / wrong size. Read-only and informational: it never
+     * grants access. Layout: see SNAPSHOT_RECORD_BYTES in forwarding.rs.
+     */
+    static native int snapshotForwarding(long session, byte[] out);
     /** Dormant default-deny UDP session; no packet forwarding API. Zero is failure. */
     public static native long startUdpSession(Object vpnService);
     /** Returns 1 for valid UDP dropped, 0 for other packets dropped, -1 on session error. Never allows. */
