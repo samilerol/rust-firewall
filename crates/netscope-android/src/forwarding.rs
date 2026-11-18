@@ -23,6 +23,36 @@ const OBSERVATION_BYTES: usize = 38;
 pub const SNAPSHOT_RECORD_BYTES: usize = 96;
 pub const SNAPSHOT_MAX_FLOWS: usize = 64;
 
+/// Inverse of [`observation`]: rebuilds the flow id from the 38-byte metadata block.
+fn flow_from_observation(bytes: &[u8]) -> Option<FlowId> {
+    if bytes.len() != OBSERVATION_BYTES {
+        return None;
+    }
+    let protocol = match bytes[0] {
+        6 => Protocol::Tcp,
+        17 => Protocol::Udp,
+        _ => return None,
+    };
+    let (source, destination): (std::net::IpAddr, std::net::IpAddr) = match bytes[1] {
+        4 => (
+            std::net::Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[6..10]).ok()?).into(),
+            std::net::Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[22..26]).ok()?).into(),
+        ),
+        16 => (
+            std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&bytes[6..22]).ok()?).into(),
+            std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&bytes[22..38]).ok()?).into(),
+        ),
+        _ => return None,
+    };
+    Some(FlowId {
+        source,
+        destination,
+        source_port: u16::from_be_bytes([bytes[2], bytes[3]]),
+        destination_port: u16::from_be_bytes([bytes[4], bytes[5]]),
+        protocol,
+    })
+}
+
 /// Big-endian record: 0 protocol (6/17), 1 address family (4/16), 2..4 source port,
 /// 4..6 destination port, 6..22 source address, 22..38 destination address (IPv4 uses the first
 /// four bytes), 38..42 uid as i32 (-1 unknown), 42..44 zero, 44..52 outbound packets,
@@ -170,6 +200,12 @@ impl Session {
             Protocol::Udp => {
                 let _ = self.udp.send(packet, now);
             }
+        }
+    }
+    fn note_owner(&mut self, id: &FlowId, uid: Option<u32>) -> bool {
+        match id.protocol {
+            Protocol::Tcp => self.tcp.note_owner(id, uid),
+            Protocol::Udp => self.udp.note_owner(id, uid),
         }
     }
     fn snapshot(&self) -> Vec<(FlowId, Observation)> {
@@ -372,6 +408,33 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_pollForwarding(
     })
 }
 
+/// Tells the session which uid owns the flow described by a 38-byte observation block. Returns 1
+/// when an existing flow was updated, 0 when the block is malformed, the uid is negative or the
+/// flow is not tracked, -1 for a stale token or wrong array size. Informational only.
+// SAFETY REVIEW: same pattern as the other exports: unique ABI symbol, no raw pointers, no unsafe
+// blocks; jni validates the array and the copy is bounded by the checked length.
+#[allow(unsafe_code)]
+#[no_mangle]
+pub extern "system" fn Java_org_netscope_ngfw_NativeCore_noteOwner(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    token: jlong,
+    observed: JByteArray<'_>,
+    uid: jint,
+) -> jint {
+    with_session(token, |session| {
+        if observed.is_null() || env.get_array_length(&observed).ok()? != OBSERVATION_BYTES as jint
+        {
+            return None;
+        }
+        let bytes = env.convert_byte_array(&observed).ok()?;
+        let (Some(id), Ok(uid)) = (flow_from_observation(&bytes), u32::try_from(uid)) else {
+            return Some(0);
+        };
+        Some(jint::from(session.note_owner(&id, Some(uid))))
+    })
+}
+
 /// Writes up to `SNAPSHOT_MAX_FLOWS` fixed-size records (newest first) into `destination`, which
 /// must be exactly `SNAPSHOT_MAX_FLOWS * SNAPSHOT_RECORD_BYTES` long. Returns the record count,
 /// or -1 for a stale token, a wrong-size array or a bridge failure. Read-only.
@@ -498,6 +561,27 @@ mod tests {
             ..flow(1, false)
         };
         assert_eq!(encode_flow(&mixed, &obs), [0u8; SNAPSHOT_RECORD_BYTES]);
+    }
+    #[test]
+    fn observation_block_round_trips_to_the_flow_id() {
+        for v6 in [false, true] {
+            let id = flow(4242, v6);
+            let packet = Packet {
+                source: id.source,
+                destination: id.destination,
+                source_port: id.source_port,
+                destination_port: id.destination_port,
+                protocol: id.protocol,
+                length: 40,
+            };
+            let bytes: Vec<u8> = observation(&packet).iter().map(|b| *b as u8).collect();
+            assert_eq!(flow_from_observation(&bytes), Some(id));
+        }
+        assert_eq!(flow_from_observation(&[0u8; 37]), None);
+        let mut bad = vec![0u8; OBSERVATION_BYTES];
+        assert_eq!(flow_from_observation(&bad), None, "unknown protocol");
+        bad[0] = 6;
+        assert_eq!(flow_from_observation(&bad), None, "unknown family");
     }
     #[test]
     fn merge_is_newest_first_bounded_and_deterministic() {

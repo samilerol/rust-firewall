@@ -177,6 +177,11 @@ impl Engine {
     pub fn next_expiry(&self) -> Option<u64> {
         self.flows.next_expiry()
     }
+    /// Records the owner uid the platform resolved for an existing flow. Informational: it does
+    /// not change decisions, counters or leases, and never creates a flow.
+    pub fn note_owner(&mut self, id: &FlowId, uid: Option<u32>) -> bool {
+        self.flows.set_uid(id, uid)
+    }
     /// Bounded copy of the tracked flows, newest first; see `Tracker::snapshot`.
     pub fn flow_snapshot(&self, limit: usize) -> Vec<(FlowId, Observation)> {
         self.flows.snapshot(limit)
