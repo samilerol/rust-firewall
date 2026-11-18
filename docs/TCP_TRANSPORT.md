@@ -36,7 +36,7 @@ Time is monotonic u64 milliseconds. smoltcp stores i64 microseconds; MAX_TIME_MS
 
 ## Resource limits
 
-- Max 64 active flows; zero flows explicitly disables new admissions.
+- Max 1024 active flows (matching the UDP relay); the payload budget below, not this cap, bounds memory. Measured once on a loopback test harness (not a device): roughly 25-40 KB of resident memory per flow at 4-8 KiB stream buffers, harness client stacks included; zero flows explicitly disables new admissions.
 - Raw-IP MTU 1280..1500; oversize input is rejected. IPv4 options/fragments and IPv6 extension headers remain unsupported by the front parser.
 - Each stream direction reserves 1024..65536 bytes, one ingress packet slot and 1..16 output slots per flow.
 - Config validates `max_flows * (2*buffer_bytes + (output_slots+1)*MTU)` against an explicit payload budget <=16 MiB before allocation. Allocator metadata, smoltcp metadata/assembler records, OS buffers and application-held returned packets are not included in this byte estimate. OS send/receive buffer settings are bounded hints, not exact kernel accounting.

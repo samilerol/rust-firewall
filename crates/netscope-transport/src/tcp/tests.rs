@@ -298,7 +298,8 @@ fn capacity_clock_budget_and_first_syn_are_explicit() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     for cfg in [
         Config {
-            max_flows: 65,
+            max_flows: MAX_FLOWS + 1,
+            buffer_budget: MAX_BUFFER_BUDGET, // only the flow cap can reject this
             ..config()
         },
         Config {
@@ -840,4 +841,22 @@ fn refused_upstream_never_shows_the_client_an_established_connection() {
     drain(&mut r, now);
     assert_eq!(seen, [true]);
     assert_eq!(client_state(&client), State::Closed);
+}
+#[test]
+fn the_maximum_flow_count_is_accepted_within_the_memory_budget() {
+    let cfg = Config {
+        max_flows: MAX_FLOWS,
+        buffer_budget: MAX_BUFFER_BUDGET,
+        ..config()
+    };
+    let relay = TcpRelay::new(
+        Policy::new(vec![], Action::Allow).unwrap(),
+        cfg,
+        Protector {
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(relay.flow_count(), 0);
 }

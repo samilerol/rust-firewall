@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-pub const MAX_FLOWS: usize = 64;
+pub const MAX_FLOWS: usize = 1024;
 /// smoltcp stores microseconds in i64; retain two days for configured timers.
 pub const MAX_TIME_MS: u64 = (i64::MAX as u64) / 1000 - 172_800_000;
 pub const MAX_BUFFER_BUDGET: usize = 16 * 1024 * 1024;
