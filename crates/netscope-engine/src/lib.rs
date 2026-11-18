@@ -1,5 +1,5 @@
 //! Platform-independent checked packet admission. Admission does not implement TCP state or I/O.
-use netscope_conntrack::{FlowId, Observation, TrackError, Tracker};
+use netscope_conntrack::{Direction, FlowId, Observation, TrackError, Tracker};
 use netscope_packet::{parse_checked, ChecksumPolicy, Packet, ParseError};
 use netscope_policy::{Action, Context, ContextRule, Decision, Policy, PolicyError, Rule};
 
@@ -74,12 +74,15 @@ impl Engine {
                 rule_index: decision.rule_index,
             });
         }
-        if let Err(error) = self.flows.observe(FlowId::from(&packet), now) {
+        let id = FlowId::from(&packet);
+        if let Err(error) = self.flows.observe(id, now) {
             return self.drop_packet(match error {
                 TrackError::Capacity => DropReason::FlowCapacity,
                 TrackError::ClockReversed => DropReason::ClockReversed,
             });
         }
+        self.flows
+            .account(&id, Direction::Outbound, bytes.len() as u64, context.uid);
         self.stats.accepted = self.stats.accepted.saturating_add(1);
         Outcome::Accepted { packet, decision }
     }
@@ -113,7 +116,8 @@ impl Engine {
         self.flows.clear();
     }
     /// Response authorization only: checks integrity, current policy and monotonic time,
-    /// but does not create or refresh a reverse flow observation.
+    /// but does not create or refresh a reverse flow observation. An accepted reply is counted in
+    /// the original flow's inbound counters (informational; the lease is not extended).
     pub fn authorize_response(&mut self, bytes: &[u8], original: &FlowId, now: u64) -> Outcome {
         self.authorize_response_in(bytes, original, now, &Context::default())
     }
@@ -147,6 +151,8 @@ impl Engine {
                 rule_index: decision.rule_index,
             });
         }
+        self.flows
+            .account(original, Direction::Inbound, bytes.len() as u64, None);
         self.stats.accepted = self.stats.accepted.saturating_add(1);
         Outcome::Accepted { packet, decision }
     }

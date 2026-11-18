@@ -23,10 +23,26 @@ impl From<&Packet> for FlowId {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Observation {
     pub created_at: u64,
     pub last_seen: u64,
+    /// Accounting by the caller via [`Tracker::account`]; saturating, informational only.
+    /// `outbound` is the flow's own direction, `inbound` is replies attributed to it.
+    pub outbound: Counters,
+    pub inbound: Counters,
+    /// Most recent owning uid the caller resolved; never an authorization input.
+    pub uid: Option<u32>,
+}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Counters {
+    pub packets: u64,
+    pub bytes: u64,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    Outbound,
+    Inbound,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrackError {
@@ -109,6 +125,9 @@ impl Tracker {
         let flow = Observation {
             created_at: now,
             last_seen: now,
+            outbound: Counters::default(),
+            inbound: Counters::default(),
+            uid: None,
         };
         self.flows.insert(id, flow);
         self.order.insert((now, id));
@@ -132,6 +151,30 @@ impl Tracker {
         self.flows.clear();
         self.order.clear();
         count
+    }
+    /// Adds one packet of `bytes` to an existing flow's counters (saturating) and remembers a
+    /// resolved `uid`. Never creates a flow, refreshes its lease or changes expiry order.
+    /// Returns false when the flow is not tracked.
+    pub fn account(
+        &mut self,
+        id: &FlowId,
+        direction: Direction,
+        bytes: u64,
+        uid: Option<u32>,
+    ) -> bool {
+        let Some(flow) = self.flows.get_mut(id) else {
+            return false;
+        };
+        let counters = match direction {
+            Direction::Outbound => &mut flow.outbound,
+            Direction::Inbound => &mut flow.inbound,
+        };
+        counters.packets = counters.packets.saturating_add(1);
+        counters.bytes = counters.bytes.saturating_add(bytes);
+        if uid.is_some() {
+            flow.uid = uid;
+        }
+        true
     }
     /// Copies at most `limit` observations, most recently seen first (ties in `FlowId` order, so
     /// the result is deterministic). Read-only: O(limit) time and allocation, no state change.
@@ -173,7 +216,8 @@ mod tests {
             t.observe(flow(1), 1).unwrap(),
             Observation {
                 created_at: 1,
-                last_seen: 1
+                last_seen: 1,
+                ..Observation::default()
             }
         );
         assert_eq!(t.observe(flow(2), 2), Err(TrackError::Capacity));
@@ -181,7 +225,8 @@ mod tests {
             t.observe(flow(1), 5).unwrap(),
             Observation {
                 created_at: 1,
-                last_seen: 5
+                last_seen: 5,
+                ..Observation::default()
             }
         );
         assert_eq!(t.expire(14), Ok(0));
@@ -304,6 +349,7 @@ mod tests {
                                 Observation {
                                     created_at: now,
                                     last_seen: now,
+                                    ..Observation::default()
                                 },
                             );
                             Ok(now)
@@ -380,5 +426,36 @@ mod tests {
         assert_eq!(t.snapshot(8).len(), 1);
         t.clear();
         assert!(t.snapshot(8).is_empty());
+    }
+    #[test]
+    fn accounting_is_saturating_directional_and_never_refreshes() {
+        let mut t = Tracker::new(4, 100);
+        assert!(!t.account(&flow(1), Direction::Outbound, 10, Some(7)));
+        assert_eq!(t.len(), 0, "account must not create a flow");
+        t.observe(flow(1), 5).unwrap();
+        assert!(t.account(&flow(1), Direction::Outbound, 100, Some(10_001)));
+        assert!(t.account(&flow(1), Direction::Outbound, 50, None));
+        assert!(t.account(&flow(1), Direction::Inbound, 1_500, None));
+        let o = *t.get(&flow(1)).unwrap();
+        assert_eq!(
+            o.outbound,
+            Counters {
+                packets: 2,
+                bytes: 150
+            }
+        );
+        assert_eq!(
+            o.inbound,
+            Counters {
+                packets: 1,
+                bytes: 1_500
+            }
+        );
+        assert_eq!(o.uid, Some(10_001), "None keeps the last resolved uid");
+        assert_eq!(o.last_seen, 5, "accounting must not refresh the lease");
+        assert_eq!(t.next_expiry(), Some(105));
+        assert!(t.account(&flow(1), Direction::Inbound, u64::MAX, None));
+        assert!(t.account(&flow(1), Direction::Inbound, 1, None));
+        assert_eq!(t.get(&flow(1)).unwrap().inbound.bytes, u64::MAX);
     }
 }
