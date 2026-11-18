@@ -292,3 +292,45 @@ fn admission_and_responses_use_the_flow_context() {
     e.update_context_policy(vec![], Action::Allow).unwrap();
     assert_eq!(e.flow_count(), 0);
 }
+#[test]
+fn flow_snapshot_reports_bytes_packets_and_uid_without_changing_decisions() {
+    let mut e = engine(4);
+    let out = packet(1234);
+    let ctx = Context {
+        uid: Some(10_042),
+        ..Context::default()
+    };
+    assert!(accepted(e.process_in(&out, 0, &ctx)));
+    assert!(accepted(e.process_in(&out, 1, &ctx)));
+    let original = FlowId::from(&parse(&out).unwrap());
+    let reply = udp::encode(
+        "198.51.100.2:53".parse().unwrap(),
+        "192.0.2.1:1234".parse().unwrap(),
+        b"abcdef",
+    )
+    .unwrap();
+    assert!(accepted(e.authorize_response(&reply, &original, 2)));
+    // An unmatched or malformed reply must not be counted anywhere.
+    let stray = udp::encode(
+        "198.51.100.9:53".parse().unwrap(),
+        "192.0.2.1:1234".parse().unwrap(),
+        b"x",
+    )
+    .unwrap();
+    assert!(!accepted(e.authorize_response(&stray, &original, 2)));
+    let snap = e.flow_snapshot(8);
+    assert_eq!(snap.len(), 1);
+    let (id, o) = &snap[0];
+    assert_eq!(*id, original);
+    assert_eq!(
+        (o.outbound.packets, o.outbound.bytes),
+        (2, 2 * out.len() as u64)
+    );
+    assert_eq!(
+        (o.inbound.packets, o.inbound.bytes),
+        (1, reply.len() as u64)
+    );
+    assert_eq!(o.uid, Some(10_042));
+    assert_eq!(o.last_seen, 1, "a reply must not extend the lease");
+    assert_eq!(e.stats().accepted, 3);
+}
