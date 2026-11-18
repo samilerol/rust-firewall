@@ -1,7 +1,9 @@
 //! Experimental bounded raw-IP TCP proxy. Caller drives ingress, polling and output draining.
 mod device;
-mod dns_stream;
+mod dns;
 use self::device::Device;
+use crate::{dns_pending::PendingQueries, DnsLimits};
+use dns::{DnsContext, DnsStream};
 use netscope_conntrack::FlowId;
 use netscope_dns::DomainPolicy;
 use netscope_engine::{Config as EngineConfig, DropReason, Engine, Outcome};
@@ -40,11 +42,6 @@ pub struct Config {
     pub buffer_budget: usize,
     pub idle_timeout_ms: u64,
     pub connect_timeout_ms: u64,
-    /// Most flows whose handshake is unfinished (upstream connecting or the client's final ACK
-    /// outstanding). Bounds what a SYN burst can hold; at most `max_flows`.
-    pub max_pending: usize,
-    /// Most flows one uid (unknown uid counts as one bucket) may hold; at most `max_flows`.
-    pub max_flows_per_uid: usize,
 }
 #[derive(Debug)]
 pub enum Error {
@@ -53,16 +50,16 @@ pub enum Error {
     Packet(netscope_packet::ParseError),
     Unsupported,
     InitialSynRequired,
+    HandshakeCapacity,
     Endpoint,
     Capacity,
-    /// A pending-handshake or per-uid flow quota refused a new flow; no state was created.
-    Quota,
     Backpressure,
     Terminated,
     Dropped(DropReason),
     Io(io::Error),
     Entropy,
     Stack,
+    Dns(crate::DnsError),
 }
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
@@ -74,10 +71,12 @@ pub struct PollReport {
     pub io_failures: usize,
     pub connect_timeouts: usize,
     pub closed: usize,
+    pub dns_failures: usize,
 }
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Buffers {
     pub stream_bytes: usize,
+    pub dns_frame_bytes: usize,
     pub queued_packets: usize,
     pub queued_packet_bytes: usize,
     pub reserved_payload_bytes: usize,
@@ -94,12 +93,11 @@ struct Flow {
     write_shutdown: bool,
     failed: bool,
     graceful: bool,
+    dns: Option<DnsStream>,
     /// The stack saw new client input (or the flow is new) and the upstream must be re-pumped.
     dirty: bool,
     /// uid/network the flow was admitted with; reused for every packet and reply of the flow.
     context: Context,
-    /// Present only for flows to a DNS-filtered port: gates both stream directions.
-    dns: Option<dns_stream::DnsStream>,
 }
 impl Drop for Flow {
     fn drop(&mut self) {
@@ -171,20 +169,10 @@ impl Flow {
             write_shutdown: false,
             failed: false,
             graceful: false,
+            dns: None,
             dirty: true,
             context: Context::default(),
-            dns: None,
         })
-    }
-    /// Whether the stack has timer or dispatch work due at `now` (cheap, no syscall).
-    fn stack_due(&mut self, now: u64) -> bool {
-        if !self.device.available() {
-            return false;
-        }
-        let at = Instant::from_millis(now as i64);
-        self.iface
-            .poll_at(at, &self.sockets)
-            .is_some_and(|due| due <= at)
     }
     fn stack_poll(&mut self, now: u64) {
         self.iface.poll(
@@ -197,17 +185,31 @@ impl Flow {
         if let Some(stream) = self.upstream.take() {
             let _ = SockRef::from(&stream).set_linger(Some(Duration::ZERO));
         }
+        self.dns = None;
         self.device.rx = None;
         self.device.tx.clear();
         self.sockets.get_mut::<StackSocket>(self.handle).abort();
         self.failed = true;
         self.stack_poll(now);
     }
-    /// Handshake unfinished: the upstream connect is pending or the client's final ACK is not in.
-    fn pending(&self) -> bool {
-        !self.failed
-            && (self.connecting
-                || self.sockets.get::<StackSocket>(self.handle).state() == State::SynReceived)
+    /// Abortive close of a flow the relay is discarding: returns the RST the client needs, or
+    /// None when the stack socket is not an active connection (nothing to reset).
+    fn reset_packet(&mut self, now: u64) -> Option<Vec<u8>> {
+        if !self.sockets.get::<StackSocket>(self.handle).is_active() {
+            return None;
+        }
+        self.abort(now);
+        self.device.tx.pop_front()
+    }
+    /// Whether the stack has timer or dispatch work due at `now` (cheap, no syscall).
+    fn stack_due(&mut self, now: u64) -> bool {
+        if !self.device.available() {
+            return false;
+        }
+        let at = Instant::from_millis(now as i64);
+        self.iface
+            .poll_at(at, &self.sockets)
+            .is_some_and(|due| due <= at)
     }
     /// Which upstream readiness would let this flow make progress right now.
     fn interest(&self) -> Interest {
@@ -221,14 +223,13 @@ impl Flow {
                 writable: true,
             };
         }
+        let socket = self.sockets.get::<StackSocket>(self.handle);
         if let Some(dns) = &self.dns {
-            // Staged frames are flushed on client ACKs (dirty); only the fd needs a wait.
             return Interest {
-                readable: !self.up_eof && dns.stage_room() > 0,
-                writable: dns.approved() > 0,
+                readable: !self.up_eof && socket.can_send(),
+                writable: !dns.outbound_empty(),
             };
         }
-        let socket = self.sockets.get::<StackSocket>(self.handle);
         Interest {
             // Room to carry upstream bytes toward the client.
             readable: socket.can_send() && !self.up_eof,
@@ -236,63 +237,61 @@ impl Flow {
             writable: socket.can_recv(),
         }
     }
-    /// Abortive close of a flow the relay is discarding: returns the RST the client needs,
-    /// or None when the stack socket is not an active connection (nothing to reset).
-    fn reset_packet(&mut self, now: u64) -> Option<Vec<u8>> {
-        if !self.sockets.get::<StackSocket>(self.handle).is_active() {
-            return None;
-        }
-        self.abort(now);
-        self.device.tx.pop_front()
-    }
-    fn pump(&mut self, dns_policy: Option<&DomainPolicy>) -> io::Result<()> {
+    fn pump(&mut self, dns_context: Option<DnsContext<'_>>) -> Result<(), Error> {
         let Some(upstream) = self.upstream.as_mut() else {
             return Ok(());
         };
         if self.connecting {
             if let Some(error) = upstream.take_error()? {
-                return Err(error);
+                return Err(error.into());
             }
             match upstream.peer_addr() {
                 Ok(_) => self.connecting = false,
                 Err(error) if error.kind() == io::ErrorKind::NotConnected => return Ok(()),
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into()),
             }
         }
         let socket = self.sockets.get_mut::<StackSocket>(self.handle);
-        if let (Some(dns), Some(policy)) = (self.dns.as_mut(), dns_policy) {
-            pump_dns(dns, policy, socket, upstream, &mut self.up_eof)?;
-        } else if socket.can_recv() {
-            let result = socket.recv(|bytes| match upstream.write(bytes) {
-                Ok(0) => (
-                    0,
-                    Err(io::Error::new(
-                        io::ErrorKind::WriteZero,
-                        "upstream accepted zero bytes",
-                    )),
-                ),
-                Ok(n) => (n, Ok(())),
-                Err(e) if retry(&e) => (0, Ok(())),
-                Err(e) => (0, Err(e)),
-            });
-            if let Ok(result) = result {
-                result?;
+        if let Some(dns) = &mut self.dns {
+            let context = dns_context.ok_or(Error::Stack)?;
+            if dns.pump(socket, upstream, context, !self.up_eof)? {
+                self.up_eof = true;
+                socket.close();
             }
-        }
-        if self.dns.is_none() && socket.can_send() && !self.up_eof {
-            let result = socket.send(|bytes| match upstream.read(bytes) {
-                Ok(n) => (n, Ok(n == 0)),
-                Err(e) if retry(&e) => (0, Ok(false)),
-                Err(e) => (0, Err(e)),
-            });
-            if let Ok(result) = result {
-                if result? {
-                    self.up_eof = true;
-                    socket.close();
+        } else {
+            if socket.can_recv() {
+                let result = socket.recv(|bytes| match upstream.write(bytes) {
+                    Ok(0) => (
+                        0,
+                        Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "upstream accepted zero bytes",
+                        )),
+                    ),
+                    Ok(n) => (n, Ok(())),
+                    Err(e) if retry(&e) => (0, Ok(())),
+                    Err(e) => (0, Err(e)),
+                });
+                if let Ok(result) = result {
+                    result?;
+                }
+            }
+            if socket.can_send() && !self.up_eof {
+                let result = socket.send(|bytes| match upstream.read(bytes) {
+                    Ok(n) => (n, Ok(n == 0)),
+                    Err(e) if retry(&e) => (0, Ok(false)),
+                    Err(e) => (0, Err(e)),
+                });
+                if let Ok(result) = result {
+                    if result? {
+                        self.up_eof = true;
+                        socket.close();
+                    }
                 }
             }
         }
         if !self.write_shutdown
+            && self.dns.as_ref().is_none_or(DnsStream::outbound_empty)
             && socket.recv_queue() == 0
             && matches!(
                 socket.state(),
@@ -311,91 +310,6 @@ impl Flow {
         }
         Ok(())
     }
-}
-/// Move DNS-over-TCP bytes in both directions, releasing only complete, approved frames.
-fn pump_dns(
-    dns: &mut dns_stream::DnsStream,
-    policy: &DomainPolicy,
-    socket: &mut StackSocket,
-    upstream: &mut TcpStream,
-    up_eof: &mut bool,
-) -> io::Result<()> {
-    let violation = |_| io::Error::new(io::ErrorKind::InvalidData, "DNS stream violation");
-    if socket.can_recv() {
-        let queued = socket.recv_queue();
-        let capacity = socket.recv_capacity();
-        socket
-            .peek_slice(dns.scratch(queued))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "DNS peek failed"))?;
-        dns.inspect_client(capacity, policy).map_err(violation)?;
-        let allowed = dns.approved();
-        if allowed > 0 {
-            let mut wrote = 0;
-            let result =
-                socket.recv(
-                    |bytes| match upstream.write(&bytes[..bytes.len().min(allowed)]) {
-                        Ok(0) => (
-                            0,
-                            Err(io::Error::new(
-                                io::ErrorKind::WriteZero,
-                                "upstream accepted zero bytes",
-                            )),
-                        ),
-                        Ok(n) => {
-                            wrote = n;
-                            (n, Ok(()))
-                        }
-                        Err(e) if retry(&e) => (0, Ok(())),
-                        Err(e) => (0, Err(e)),
-                    },
-                );
-            if let Ok(result) = result {
-                result?;
-            }
-            dns.written(wrote);
-        }
-    }
-    let flush = |dns: &mut dns_stream::DnsStream, socket: &mut StackSocket| {
-        if socket.can_send() && !dns.deliverable().is_empty() {
-            let sent = socket.send_slice(dns.deliverable()).unwrap_or(0);
-            dns.delivered(sent);
-        }
-    };
-    flush(dns, socket);
-    if !*up_eof && dns.stage_room() > 0 {
-        let mut chunk = [0u8; 1024];
-        let room = chunk.len().min(dns.stage_room());
-        match upstream.read(&mut chunk[..room]) {
-            Ok(0) => {
-                if dns.has_partial() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "upstream closed inside a DNS frame",
-                    ));
-                }
-                *up_eof = true;
-            }
-            Ok(n) => dns.absorb(&chunk[..n], policy).map_err(violation)?,
-            Err(e) if retry(&e) => {}
-            Err(e) => return Err(e),
-        }
-        flush(dns, socket);
-    }
-    if *up_eof && dns.deliverable().is_empty() {
-        socket.close();
-    }
-    // The client closed in the middle of a frame: it can never be completed.
-    if matches!(
-        socket.state(),
-        State::CloseWait | State::LastAck | State::Closing | State::TimeWait
-    ) && socket.recv_queue() > dns.approved()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "client closed inside a DNS frame",
-        ));
-    }
-    Ok(())
 }
 fn retry(error: &io::Error) -> bool {
     matches!(
@@ -444,13 +358,17 @@ pub struct TcpRelay<P> {
     engine: Engine,
     flows: HashMap<FlowId, Flow>,
     round_robin: VecDeque<FlowId>,
+    pump_order: VecDeque<FlowId>,
     /// RSTs synthesized for flows discarded without a normal close; drained by `next_packet`.
     resets: VecDeque<Vec<u8>>,
     /// Last accepted clock value, for teardown paths that take no `now`.
     clock: u64,
+    handshake_limit: usize,
+    protector: P,
     dns_policy: Option<DomainPolicy>,
     dns_ports: BTreeSet<u16>,
-    protector: P,
+    dns_limits: DnsLimits,
+    dns_pending: PendingQueries,
 }
 impl<P: TcpSocketProtector> TcpRelay<P> {
     pub fn new(policy: Policy, config: Config, protector: P) -> Result<Self, Error> {
@@ -462,8 +380,6 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             || !(1..=86_400_000).contains(&config.idle_timeout_ms)
             || !(1..=30_000).contains(&config.connect_timeout_ms)
             || config.connect_timeout_ms > config.idle_timeout_ms
-            || config.max_pending > config.max_flows
-            || config.max_flows_per_uid > config.max_flows
         {
             return Err(Error::Config);
         }
@@ -483,26 +399,33 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             },
         )
         .map_err(|_| Error::Config)?;
+        let dns_limits = DnsLimits {
+            max_pending_per_flow: 8,
+            max_pending_total: crate::MAX_DNS_PENDING_TOTAL,
+            query_timeout: config.idle_timeout_ms,
+        };
         Ok(Self {
             config,
             engine,
             flows: HashMap::new(),
             round_robin: VecDeque::new(),
+            pump_order: VecDeque::new(),
             resets: VecDeque::new(),
             clock: 0,
+            handshake_limit: config.max_flows,
+            protector,
             dns_policy: None,
             dns_ports: BTreeSet::new(),
-            protector,
+            dns_limits,
+            dns_pending: PendingQueries::new(dns_limits),
         })
     }
-    fn reset_limit(&self) -> usize {
-        self.config.max_flows * 2
-    }
-    fn maintain(&mut self, now: u64) -> Result<(), Error> {
+    fn maintain(&mut self, now: u64) -> Result<usize, Error> {
         if now > MAX_TIME_MS {
             return Err(Error::Clock);
         }
         let flows = &mut self.flows;
+        let pending = &mut self.dns_pending;
         let resets = &mut self.resets;
         let limit = self.config.max_flows * 2;
         self.engine
@@ -510,11 +433,38 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
                 if let Some(mut flow) = flows.remove(&id) {
                     queue_reset(resets, limit, flow.reset_packet(now));
                 }
+                pending.remove_flow(&id);
             })
             .map_err(|_| Error::Clock)?;
         self.clock = now;
         self.round_robin.retain(|id| self.flows.contains_key(id));
-        Ok(())
+        self.pump_order.retain(|id| self.flows.contains_key(id));
+        let mut failed = 0;
+        while let Some(id) = self.dns_pending.expired_flow(now) {
+            self.dns_pending.remove_flow(&id);
+            if let Some(flow) = self.flows.get_mut(&id) {
+                if !flow.failed {
+                    flow.abort(now);
+                    failed += 1;
+                }
+            }
+        }
+        for (id, flow) in &mut self.flows {
+            if !flow.failed
+                && flow
+                    .dns
+                    .as_ref()
+                    .is_some_and(|dns| dns.expired(now, self.dns_limits.query_timeout))
+            {
+                self.dns_pending.remove_flow(id);
+                flow.abort(now);
+                failed += 1;
+            }
+        }
+        Ok(failed)
+    }
+    fn reset_limit(&self) -> usize {
+        self.config.max_flows * 2
     }
     /// Drop a flow; an active client connection receives a RST instead of silence.
     fn forget(&mut self, id: &FlowId) {
@@ -522,8 +472,10 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             let packet = flow.reset_packet(self.clock);
             queue_reset(&mut self.resets, self.config.max_flows * 2, packet);
         }
+        self.dns_pending.remove_flow(id);
         self.engine.forget_flow(id);
         self.round_robin.retain(|v| v != id);
+        self.pump_order.retain(|v| v != id);
     }
     /// Open the protected upstream stream; returns it and whether the connect is still pending.
     fn connect_upstream(&self, id: FlowId) -> Result<(TcpStream, bool), Error> {
@@ -561,7 +513,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         let mut flow = Flow::new(id, self.config, now)?;
         flow.context = context;
         if self.dns_policy.is_some() && self.dns_ports.contains(&id.destination_port) {
-            flow.dns = Some(dns_stream::DnsStream::new());
+            flow.dns = Some(DnsStream::new());
         }
         flow.device.rx = Some(bytes.to_vec());
         flow.stack_poll(now);
@@ -631,30 +583,21 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             return Err(Error::Backpressure);
         }
         let context = self.flows.get(&id).map_or(*context, |flow| flow.context);
-        if !self.flows.contains_key(&id) {
-            let pending = self.flows.values().filter(|flow| flow.pending()).count();
-            let same_uid = self
-                .flows
-                .values()
-                .filter(|flow| flow.context.uid == context.uid)
-                .count();
-            // A full table keeps reporting FlowCapacity from the engine; quotas apply with room left.
-            let room = self.flows.len() < self.config.max_flows;
-            if room
-                && (pending >= self.config.max_pending || same_uid >= self.config.max_flows_per_uid)
-            {
-                return Err(Error::Quota);
-            }
-        }
         match self.engine.process_in(bytes, now, &context) {
             Outcome::Dropped(reason) => return Err(Error::Dropped(reason)),
             Outcome::Accepted { .. } => {}
         }
         if !self.flows.contains_key(&id) {
-            match self.open_flow(id, bytes, now, context) {
+            if self.pending_handshakes() >= self.handshake_limit {
+                self.engine.forget_flow(&id);
+                return Err(Error::HandshakeCapacity);
+            }
+            let opened = self.open_flow(id, bytes, now, context);
+            match opened {
                 Ok(flow) => {
                     self.flows.insert(id, flow);
                     self.round_robin.push_back(id);
+                    self.pump_order.push_back(id);
                     return Ok(id);
                 }
                 Err(error) => {
@@ -676,32 +619,102 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     }
     /// One bounded pump pass: at most one upstream read/write per flow; no background thread.
     pub fn poll(&mut self, now: u64) -> Result<PollReport, Error> {
-        self.run_poll(now, None)
+        self.poll_with_budget(now, self.config.max_flows)
+    }
+
+    /// Service at most `flow_budget` flows, rotating across calls independently of output draining.
+    /// Zero runs deadline maintenance only. Drive polls frequently enough to service all flows.
+    pub fn poll_with_budget(&mut self, now: u64, flow_budget: usize) -> Result<PollReport, Error> {
+        let dns_failures = self.maintain(now)?;
+        let mut report = PollReport {
+            dns_failures,
+            ..PollReport::default()
+        };
+        // Enforce connect deadlines even when a flow is outside this pass's service budget.
+        for (id, flow) in &mut self.flows {
+            if !flow.failed
+                && flow.connecting
+                && now - flow.created >= self.config.connect_timeout_ms
+            {
+                flow.abort(now);
+                self.dns_pending.remove_flow(id);
+                report.connect_timeouts += 1;
+            }
+        }
+        for _ in 0..flow_budget.min(self.pump_order.len()) {
+            let Some(id) = self.pump_order.pop_front() else {
+                break;
+            };
+            let Some(flow) = self.flows.get_mut(&id) else {
+                continue;
+            };
+            if !flow.failed {
+                flow.dirty = false;
+                let context = self.dns_policy.as_ref().map(|policy| DnsContext {
+                    id,
+                    policy,
+                    pending: &mut self.dns_pending,
+                    now,
+                });
+                if let Err(error) = flow.pump(context) {
+                    flow.abort(now);
+                    self.dns_pending.remove_flow(&id);
+                    if matches!(error, Error::Dns(_)) {
+                        report.dns_failures += 1;
+                    } else {
+                        report.io_failures += 1;
+                    }
+                }
+            }
+            flow.stack_poll(now);
+            if flow.sockets.get::<StackSocket>(flow.handle).state() == State::Closed
+                && flow.device.tx.is_empty()
+            {
+                self.forget(&id);
+                report.closed += 1;
+            } else {
+                self.pump_order.push_back(id);
+            }
+        }
+        Ok(report)
     }
     /// Readiness-driven pass: pumps only flows named in `ready` (upstream fd reported ready by
     /// the caller's event loop) or flows with new client input, then reaps closed flows. Time
     /// based work (connect deadline, stack timers, idle expiry) still runs for every flow
     /// without any syscall. Unknown or duplicate ids are ignored. Call it again after
-    /// `next_wakeup` elapses even if no fd was ready.
+    /// `next_wakeup` elapses even if no fd was ready. `poll`/`poll_with_budget` stay the simple
+    /// full-scan alternative.
     pub fn poll_ready(&mut self, now: u64, ready: &[FlowId]) -> Result<PollReport, Error> {
+        let dns_failures = self.maintain(now)?;
         let ready: HashSet<FlowId> = ready.iter().copied().collect();
-        self.run_poll(now, Some(&ready))
-    }
-    fn run_poll(&mut self, now: u64, ready: Option<&HashSet<FlowId>>) -> Result<PollReport, Error> {
-        self.maintain(now)?;
-        let mut report = PollReport::default();
+        let mut report = PollReport {
+            dns_failures,
+            ..PollReport::default()
+        };
         let mut closed = Vec::new();
         for (id, flow) in &mut self.flows {
-            let pump = ready.is_none_or(|ready| flow.dirty || ready.contains(id));
+            let pump = flow.dirty || ready.contains(id);
             if !flow.failed {
                 if flow.connecting && now - flow.created >= self.config.connect_timeout_ms {
                     flow.abort(now);
+                    self.dns_pending.remove_flow(id);
                     report.connect_timeouts += 1;
                 } else if pump {
                     flow.dirty = false;
-                    if flow.pump(self.dns_policy.as_ref()).is_err() {
+                    let context = self.dns_policy.as_ref().map(|policy| DnsContext {
+                        id: *id,
+                        policy,
+                        pending: &mut self.dns_pending,
+                        now,
+                    });
+                    if let Err(error) = flow.pump(context) {
                         flow.abort(now);
-                        report.io_failures += 1;
+                        self.dns_pending.remove_flow(id);
+                        if matches!(error, Error::Dns(_)) {
+                            report.dns_failures += 1;
+                        } else {
+                            report.io_failures += 1;
+                        }
                     }
                 }
             }
@@ -735,13 +748,44 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             })
         })
     }
+    /// Earliest absolute time (ms) at which `poll_ready` has time-driven work: idle expiry,
+    /// connect deadline or a stack timer. `Some(now)` when new client input is unprocessed and
+    /// `None` when only fd readiness or new input can make progress. Flows whose output queue
+    /// is full are ignored: only draining `next_packet` unblocks them, not time.
+    pub fn next_wakeup(&mut self, now: u64) -> Option<u64> {
+        let mut next = self.engine.next_expiry();
+        let connect_timeout = self.config.connect_timeout_ms;
+        let at = Instant::from_millis(now as i64);
+        for flow in self.flows.values_mut() {
+            if flow.failed {
+                continue;
+            }
+            if flow.dirty {
+                return Some(now);
+            }
+            let mut due = None;
+            if flow.connecting {
+                due = Some(flow.created + connect_timeout);
+            }
+            if flow.device.available() {
+                if let Some(timer) = flow.iface.poll_at(at, &flow.sockets) {
+                    let timer = timer.total_millis().max(0) as u64;
+                    due = Some(due.map_or(timer, |d: u64| d.min(timer)));
+                }
+            }
+            if let Some(due) = due {
+                next = Some(next.map_or(due, |current| current.min(due)));
+            }
+        }
+        next.map(|time| time.max(now))
+    }
     /// Block up to `max_wait` until an upstream stream has the readiness it declared interest
     /// in or time-driven work is due (`next_wakeup`), then return the flows to pass to
     /// `poll_ready`. Errors/hangups count as ready so the pump observes them. A signal
-    /// interruption returns an empty list. The wait never outlasts the relay's own deadlines,
+    /// interruption returns an empty list. The wait never outlasts the relay's own deadlines
     /// and returns at once when client input is unprocessed. Uses `poll(2)` through a safe
-    /// wrapper, so cost grows linearly with flows; this is not an epoll registration. To wait
-    /// on TCP and UDP together use `event::wait_ready`.
+    /// wrapper, so cost grows linearly with flows. To wait on TCP and UDP together use
+    /// `event::wait_ready`.
     #[cfg(unix)]
     pub fn wait_ready(&mut self, now: u64, max_wait: Duration) -> Result<Vec<FlowId>, Error> {
         self.maintain(now)?;
@@ -771,37 +815,6 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
                 (!events.is_empty()).then(|| (*id, stream.as_fd(), events))
             })
             .collect()
-    }
-    /// Earliest absolute time (ms) at which `poll_ready` has time-driven work: idle expiry,
-    /// connect deadline or a stack timer. `Some(now)` when new client input is unprocessed and
-    /// `None` when only fd readiness or new input can make progress. Flows whose output queue
-    /// is full are ignored: only `next_packet` draining can unblock them, not time.
-    pub fn next_wakeup(&mut self, now: u64) -> Option<u64> {
-        let mut next = self.engine.next_expiry();
-        let connect_timeout = self.config.connect_timeout_ms;
-        let at = Instant::from_millis(now as i64);
-        for flow in self.flows.values_mut() {
-            if flow.failed {
-                continue;
-            }
-            if flow.dirty {
-                return Some(now);
-            }
-            let mut due = None;
-            if flow.connecting {
-                due = Some(flow.created + connect_timeout);
-            }
-            if flow.device.available() {
-                if let Some(timer) = flow.iface.poll_at(at, &flow.sockets) {
-                    let timer = timer.total_millis().max(0) as u64;
-                    due = Some(due.map_or(timer, |d: u64| d.min(timer)));
-                }
-            }
-            if let Some(due) = due {
-                next = Some(next.map_or(due, |current| current.min(due)));
-            }
-        }
-        next.map(|time| time.max(now))
     }
     /// Drain round-robin output; every packet must pass current inbound policy and reverse-flow association.
     pub fn next_packet(&mut self, now: u64) -> Result<Option<Vec<u8>>, Error> {
@@ -853,11 +866,18 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         self.reset_network();
         Ok(())
     }
-    /// Filter DNS-over-TCP on the given destination ports: both stream directions are gated on
-    /// complete length-prefixed frames, query and answer names must be allowed by `policy` and
-    /// answers must match an outstanding question (see DNS_POLICY.md). Existing flows are reset.
-    /// Rejects an invalid port set or a memory budget that cannot also hold the per-DNS-flow
-    /// inspection buffers; disable with `(None, vec![])`.
+    pub fn reset_network(&mut self) {
+        let limit = self.reset_limit();
+        for (_, mut flow) in self.flows.drain() {
+            queue_reset(&mut self.resets, limit, flow.reset_packet(self.clock));
+        }
+        self.dns_pending.clear();
+        self.round_robin.clear();
+        self.pump_order.clear();
+        self.engine.reset_network();
+    }
+    /// Opt-in classic DNS on selected TCP destination ports. Valid changes revoke all flows.
+    /// Complete messages (<=4096 bytes) are validated before any frame bytes are forwarded.
     pub fn set_dns_filter(
         &mut self,
         policy: Option<DomainPolicy>,
@@ -871,27 +891,59 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         if ports.len() != count {
             return Err(Error::Config);
         }
-        if policy.is_some() {
-            let per_flow = self.config.buffer_bytes * 3
+        let extra = if policy.is_some() {
+            dns::RESERVED_BYTES
+        } else {
+            0
+        };
+        let required = self.config.max_flows
+            * (self.config.buffer_bytes * 2
                 + (self.config.output_slots + 1) * self.config.mtu
-                + dns_stream::STAGE_MAX;
-            if self.config.max_flows.saturating_mul(per_flow) > self.config.buffer_budget {
-                return Err(Error::Config);
-            }
+                + extra);
+        if required > self.config.buffer_budget {
+            return Err(Error::Config);
         }
+        self.reset_network();
         self.dns_policy = policy;
         self.dns_ports = ports;
-        self.reset_network();
         Ok(())
     }
-    pub fn reset_network(&mut self) {
-        let limit = self.reset_limit();
-        for (_, mut flow) in self.flows.drain() {
-            queue_reset(&mut self.resets, limit, flow.reset_packet(self.clock));
+    /// Same hard query-count bounds as UDP; timeout is explicitly in milliseconds here.
+    /// Valid changes revoke flows. Invalid changes retain state/configuration.
+    pub fn set_dns_limits(&mut self, limits: DnsLimits) -> Result<(), Error> {
+        if !limits.valid() {
+            return Err(Error::Config);
         }
-        self.round_robin.clear();
-        self.engine.reset_network();
+        self.reset_network();
+        self.dns_limits = limits;
+        self.dns_pending = PendingQueries::new(limits);
+        Ok(())
     }
+    pub fn pending_dns_count(&self) -> usize {
+        self.dns_pending.len()
+    }
+    /// Set the maximum number of flows awaiting either side of the handshake.
+    /// Lower limits affect new admissions. Zero prevents new handshakes.
+    pub fn set_handshake_limit(&mut self, limit: usize) -> Result<(), Error> {
+        if limit > self.config.max_flows {
+            return Err(Error::Config);
+        }
+        self.handshake_limit = limit;
+        Ok(())
+    }
+
+    pub fn pending_handshakes(&self) -> usize {
+        self.flows
+            .values()
+            .filter(|flow| {
+                !flow.failed
+                    && (flow.connecting
+                        || flow.sockets.get::<StackSocket>(flow.handle).state()
+                            == State::SynReceived)
+            })
+            .count()
+    }
+
     pub fn flow_count(&self) -> usize {
         self.flows.len()
     }
@@ -900,12 +952,18 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         for flow in self.flows.values() {
             let socket = flow.sockets.get::<StackSocket>(flow.handle);
             used.stream_bytes += socket.send_queue() + socket.recv_queue();
+            used.dns_frame_bytes += flow.dns.as_ref().map_or(0, DnsStream::used);
+            used.reserved_payload_bytes += self.config.buffer_bytes * 2
+                + (self.config.output_slots + 1) * self.config.mtu
+                + if flow.dns.is_some() {
+                    dns::RESERVED_BYTES
+                } else {
+                    0
+                };
             used.queued_packets += flow.device.tx.len() + usize::from(flow.device.rx.is_some());
             used.queued_packet_bytes += flow.device.tx.iter().map(Vec::len).sum::<usize>()
                 + flow.device.rx.as_ref().map_or(0, Vec::len);
         }
-        used.reserved_payload_bytes = self.flows.len()
-            * (self.config.buffer_bytes * 2 + (self.config.output_slots + 1) * self.config.mtu);
         used
     }
 }
@@ -916,6 +974,7 @@ mod tests;
 /// Deterministic in-memory stack harness; no OS sockets, only enabled in fuzz builds.
 #[cfg(feature = "fuzzing")]
 pub fn exercise_stack(input: &[u8]) {
+    dns::exercise(input);
     fuzz_support::exercise(input);
 }
 #[cfg(feature = "fuzzing")]

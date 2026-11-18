@@ -1,10 +1,15 @@
 package org.netscope.ngfw;
 
-/** The native API has no allow/forward result. No packet contents are logged. */
+/** JNI entry points for the diagnostic and opt-in forwarding sessions. */
 public final class NativeCore {
     static { System.loadLibrary("netscope_android"); }
     private NativeCore() {}
     public static native int inspect(byte[] packet, int length);
+    static native long startForwarding(Object vpnService, Object appPolicy);
+    /** 0 = invalid, 1 = profile permits, 2 = profile blocks, 3 = app policy blocks, -1 = bridge failure. */
+    static native int forwardPacket(long session, byte[] packet, int length, byte[] observation);
+    static native int pollForwarding(long session, byte[] packet);
+    static native int stopForwarding(long session);
     /** Dormant default-deny UDP session; no packet forwarding API. Zero is failure. */
     public static native long startUdpSession(Object vpnService);
     /** Returns 1 for valid UDP dropped, 0 for other packets dropped, -1 on session error. Never allows. */

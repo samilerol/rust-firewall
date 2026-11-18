@@ -1,25 +1,35 @@
 //! Bounded nonblocking UDP relay. No TCP stack or Android socket protection implementation.
 use netscope_conntrack::FlowId;
-use netscope_dns::{parse_query, parse_response, DomainPolicy, Message};
+use netscope_dns::{parse_query, parse_response, DomainPolicy};
 use netscope_engine::{Config, DropReason, Engine, Outcome, Stats};
 use netscope_packet::{parse, udp, Protocol};
 use netscope_policy::{Action, Context, Policy, PolicyError, Rule};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
     time::Duration,
 };
 
 pub const MAX_UDP_FLOWS: usize = 1024;
-/// Most outstanding DNS questions per flow. Resolvers often send A and AAAA concurrently from one
-/// socket; each is matched by (id, question) and expires independently.
-pub const MAX_DNS_PENDING: usize = 8;
-/// An outstanding DNS question and when it was last sent (retransmissions refresh it).
-struct PendingDns {
-    query: Message,
-    sent_at: u64,
+pub const MAX_DNS_PENDING_PER_FLOW: usize = 64;
+pub const MAX_DNS_PENDING_TOTAL: usize = 4096;
+/// DNS transaction budgets. Timeout uses the same caller-supplied ticks as Engine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DnsLimits {
+    pub max_pending_per_flow: usize,
+    pub max_pending_total: usize,
+    pub query_timeout: u64,
 }
+impl DnsLimits {
+    fn valid(self) -> bool {
+        (1..=MAX_DNS_PENDING_PER_FLOW).contains(&self.max_pending_per_flow)
+            && (1..=MAX_DNS_PENDING_TOTAL).contains(&self.max_pending_total)
+            && self.query_timeout > 0
+    }
+}
+mod dns_pending;
+use dns_pending::PendingQueries;
 /// Required platform hook. Called on a fresh bound socket BEFORE connect or send.
 /// Android implementations must call VpnService.protect and reject false/errors.
 /// No default/no-op implementation is provided by this crate.
@@ -46,8 +56,16 @@ impl From<io::Error> for RelayError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DnsError {
     Malformed(netscope_dns::ParseError),
-    DomainDenied { rule_index: Option<usize> },
+    DomainDenied {
+        rule_index: Option<usize>,
+    },
+    /// The same transaction ID is already waiting for a different question.
     Busy,
+    Capacity,
+    /// Invalid TCP DNS two-byte message length.
+    FrameLength,
+    /// A TCP half-close interrupted a DNS frame.
+    IncompleteFrame,
     Unsolicited,
     Mismatched,
 }
@@ -55,6 +73,11 @@ pub enum DnsError {
 pub struct Sent {
     pub flow: FlowId,
     pub payload_bytes: usize,
+}
+#[derive(Debug)]
+pub struct UdpReply {
+    pub flow: FlowId,
+    pub result: Result<Vec<u8>, RelayError>,
 }
 /// One upstream socket and the uid/network context its flow was admitted with.
 struct UdpFlow {
@@ -64,14 +87,13 @@ struct UdpFlow {
 pub struct UdpRelay<P> {
     engine: Engine,
     sockets: HashMap<FlowId, UdpFlow>,
+    receive_order: VecDeque<FlowId>,
     protector: P,
     mtu: usize,
     receive_buffer: Box<[u8]>,
     dns_policy: Option<DomainPolicy>,
     dns_ports: BTreeSet<u16>,
-    dns_pending: HashMap<FlowId, Vec<PendingDns>>,
-    /// Lifetime of an unanswered question: the engine idle timeout.
-    dns_ttl: u64,
+    dns_pending: PendingQueries,
 }
 impl<P: SocketProtector> UdpRelay<P> {
     pub fn new(
@@ -87,39 +109,41 @@ impl<P: SocketProtector> UdpRelay<P> {
         Ok(Self {
             engine,
             sockets: HashMap::new(),
+            receive_order: VecDeque::new(),
             protector,
             mtu,
             receive_buffer: vec![0; 65528].into_boxed_slice(),
             dns_policy: None,
             dns_ports: BTreeSet::new(),
-            dns_pending: HashMap::new(),
-            dns_ttl: config.timeout,
+            dns_pending: PendingQueries::new(DnsLimits {
+                max_pending_per_flow: 8,
+                max_pending_total: MAX_DNS_PENDING_TOTAL,
+                query_timeout: config.timeout.max(1),
+            }),
         })
     }
     /// Call periodically when idle as well as on send/receive to release expired sockets.
     pub fn expire(&mut self, now: u64) -> Result<usize, RelayError> {
         let sockets = &mut self.sockets;
         let pending = &mut self.dns_pending;
-        self.engine
+        let expired = self
+            .engine
             .expire_with(now, |id| {
                 sockets.remove(&id);
-                pending.remove(&id);
+                pending.remove_flow(&id);
             })
-            .map_err(|_| RelayError::Dropped(DropReason::ClockReversed))
-    }
-    /// Drop questions older than the DNS lifetime so one stale query cannot hold a slot forever.
-    fn prune_pending(&mut self, id: &FlowId, now: u64) {
-        let ttl = self.dns_ttl;
-        if let Some(list) = self.dns_pending.get_mut(id) {
-            list.retain(|p| now.saturating_sub(p.sent_at) < ttl);
-            if list.is_empty() {
-                self.dns_pending.remove(id);
-            }
+            .map_err(|_| RelayError::Dropped(DropReason::ClockReversed))?;
+        if expired != 0 {
+            self.receive_order
+                .retain(|id| self.sockets.contains_key(id));
         }
+        self.dns_pending.expire(now);
+        Ok(expired)
     }
     fn forget(&mut self, id: &FlowId) {
         self.sockets.remove(id);
-        self.dns_pending.remove(id);
+        self.receive_order.retain(|flow| flow != id);
+        self.dns_pending.remove_flow(id);
         self.engine.forget_flow(id);
     }
     /// Validate/admit a full IP/UDP datagram, then send its payload using one protected socket per flow.
@@ -168,13 +192,9 @@ impl<P: SocketProtector> UdpRelay<P> {
                     rule_index: decision.rule_index,
                 }));
             }
-            self.prune_pending(&candidate_id, now);
-            let outstanding = self.dns_pending.get(&candidate_id);
-            if outstanding.is_some_and(|list| {
-                list.len() >= MAX_DNS_PENDING && !list.iter().any(|p| p.query == query)
-            }) {
-                return Err(RelayError::Dns(DnsError::Busy));
-            }
+            self.dns_pending
+                .check(&candidate_id, &query)
+                .map_err(RelayError::Dns)?;
             Some(query)
         } else {
             None
@@ -199,6 +219,7 @@ impl<P: SocketProtector> UdpRelay<P> {
             match opened {
                 Ok(socket) => {
                     self.sockets.insert(id, UdpFlow { socket, context });
+                    self.receive_order.push_back(id);
                 }
                 Err(error) => {
                     self.forget(&id);
@@ -211,14 +232,7 @@ impl<P: SocketProtector> UdpRelay<P> {
         match result {
             Ok(count) if count == bytes.len() - offset => {
                 if let Some(query) = dns_query {
-                    let list = self.dns_pending.entry(id).or_default();
-                    match list.iter_mut().find(|p| p.query == query) {
-                        Some(existing) => existing.sent_at = now, // retransmission
-                        None => list.push(PendingDns {
-                            query,
-                            sent_at: now,
-                        }),
-                    }
+                    self.dns_pending.record(id, query, now);
                 }
                 Ok(Sent {
                     flow: id,
@@ -244,6 +258,31 @@ impl<P: SocketProtector> UdpRelay<P> {
     /// Responses require their own CURRENT directional policy decision; outbound allow is not inbound allow.
     pub fn receive(&mut self, id: FlowId, now: u64) -> Result<Vec<u8>, RelayError> {
         self.expire(now)?;
+        self.receive_live(id, now)
+    }
+
+    /// Inspect at most `flow_budget` sockets in round-robin order and return the first reply.
+    /// Per-flow failures identify the affected flow. A zero budget still runs expiry.
+    pub fn receive_next(
+        &mut self,
+        now: u64,
+        flow_budget: usize,
+    ) -> Result<Option<UdpReply>, RelayError> {
+        self.expire(now)?;
+        for _ in 0..flow_budget.min(self.receive_order.len()) {
+            let Some(flow) = self.receive_order.pop_front() else {
+                break;
+            };
+            self.receive_order.push_back(flow);
+            match self.receive_live(flow, now) {
+                Err(RelayError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                result => return Ok(Some(UdpReply { flow, result })),
+            }
+        }
+        Ok(None)
+    }
+
+    fn receive_live(&mut self, id: FlowId, now: u64) -> Result<Vec<u8>, RelayError> {
         let flow = self.sockets.get(&id).ok_or(RelayError::UnknownFlow)?;
         let context = flow.context;
         let count = match flow.socket.recv(&mut self.receive_buffer) {
@@ -261,42 +300,27 @@ impl<P: SocketProtector> UdpRelay<P> {
             // Only this datagram is discarded; the peer cannot tear down the flow with one packet.
             return Err(RelayError::MtuExceeded);
         }
-        let mut answered = None;
-        if self.dns_policy.is_some() && self.dns_ports.contains(&id.destination_port) {
-            self.prune_pending(&id, now);
-        }
+        let mut answered_id = None;
         if let Some(policy) = self
             .dns_policy
             .as_ref()
             .filter(|_| self.dns_ports.contains(&id.destination_port))
         {
-            let checked = (|| -> Result<usize, DnsError> {
-                let outstanding = self.dns_pending.get(&id).ok_or(DnsError::Unsolicited)?;
+            let checked = (|| -> Result<(), DnsError> {
                 let response =
                     parse_response(&self.receive_buffer[..count]).map_err(DnsError::Malformed)?;
-                let position = outstanding
-                    .iter()
-                    .position(|p| {
-                        p.query.id == response.id && p.query.question == response.question
-                    })
-                    .ok_or(DnsError::Mismatched)?;
+                self.dns_pending.matches(&id, &response)?;
                 let decision = policy.decide(&response.question.name);
                 if decision.action == Action::Deny {
                     return Err(DnsError::DomainDenied {
                         rule_index: decision.rule_index,
                     });
                 }
-                Ok(position)
+                answered_id = Some(response.id);
+                Ok(())
             })();
-            match checked {
-                Ok(position) => answered = Some(position),
-                Err(error) => {
-                    // A duplicate or late answer is just discarded; other failures revoke the flow.
-                    if error != DnsError::Unsolicited {
-                        self.forget(&id);
-                    }
-                    return Err(RelayError::Dns(error));
-                }
+            if let Err(error) = checked {
+                return Err(RelayError::Dns(error));
             }
         }
         let response = udp::encode(
@@ -310,14 +334,8 @@ impl<P: SocketProtector> UdpRelay<P> {
             .authorize_response_in(&response, &id, now, &context)
         {
             Outcome::Accepted { .. } => {
-                if let Some(position) = answered {
-                    // Consume only the answered question; others stay outstanding.
-                    if let Some(list) = self.dns_pending.get_mut(&id) {
-                        list.remove(position);
-                        if list.is_empty() {
-                            self.dns_pending.remove(&id);
-                        }
-                    }
+                if let Some(query_id) = answered_id {
+                    self.dns_pending.remove_query(&id, query_id);
                 }
                 self.engine.refresh_flow(&id, now);
                 Ok(response)
@@ -327,6 +345,22 @@ impl<P: SocketProtector> UdpRelay<P> {
                 Err(RelayError::Dropped(reason))
             }
         }
+    }
+    /// A valid policy update closes ALL existing UDP sockets/observations; invalid input changes nothing.
+    pub fn update_policy(&mut self, rules: Vec<Rule>, default: Action) -> Result<(), PolicyError> {
+        self.engine.update_policy(rules, default)?;
+        self.reset_network();
+        Ok(())
+    }
+    /// [`UdpRelay::update_policy`] for rules with uid/network constraints.
+    pub fn update_context_policy(
+        &mut self,
+        rules: Vec<netscope_policy::ContextRule>,
+        default: Action,
+    ) -> Result<(), PolicyError> {
+        self.engine.update_context_policy(rules, default)?;
+        self.reset_network();
+        Ok(())
     }
     /// Block up to `max_wait` until an upstream socket has a datagram to `receive`, or until the
     /// oldest flow's idle deadline (so expired sockets are released on time), then return the
@@ -360,30 +394,16 @@ impl<P: SocketProtector> UdpRelay<P> {
             .map(|(id, flow)| (*id, flow.socket.as_fd(), rustix::event::PollFlags::IN))
             .collect()
     }
-    /// A valid policy update closes ALL existing UDP sockets/observations; invalid input changes nothing.
-    pub fn update_policy(&mut self, rules: Vec<Rule>, default: Action) -> Result<(), PolicyError> {
-        self.engine.update_policy(rules, default)?;
-        self.reset_network();
-        Ok(())
-    }
-    /// [`UdpRelay::update_policy`] for rules with uid/network constraints.
-    pub fn update_context_policy(
-        &mut self,
-        rules: Vec<netscope_policy::ContextRule>,
-        default: Action,
-    ) -> Result<(), PolicyError> {
-        self.engine.update_context_policy(rules, default)?;
-        self.reset_network();
-        Ok(())
-    }
     /// Caller must invoke on upstream-network change. No OS network observer is implemented here.
     pub fn reset_network(&mut self) {
         self.sockets.clear();
+        self.receive_order.clear();
         self.dns_pending.clear();
         self.engine.reset_network();
     }
     /// Enable question-based filtering only on the explicit destination ports. No global DNS guarantee.
-    /// One pending question per flow; identical retransmissions are allowed. A valid change revokes mappings.
+    /// Bounded concurrent IDs per flow; identical retries keep their original deadline.
+    /// A valid change revokes mappings and preserves configured DNS limits.
     pub fn set_dns_filter(
         &mut self,
         policy: Option<DomainPolicy>,
@@ -402,9 +422,19 @@ impl<P: SocketProtector> UdpRelay<P> {
         self.reset_network();
         Ok(())
     }
-    /// Outstanding DNS questions across all flows.
+    /// Set nonzero bounded DNS budgets. Valid changes revoke all mappings; invalid input changes nothing.
+    /// Constructor defaults: 8 per flow, 4096 total, timeout equal to Engine's timeout (at least 1 tick).
+    /// Expiration is measured from first successful send, independent of other traffic/retries.
+    pub fn set_dns_limits(&mut self, limits: DnsLimits) -> Result<(), RelayError> {
+        if !limits.valid() {
+            return Err(RelayError::Config);
+        }
+        self.reset_network();
+        self.dns_pending = PendingQueries::new(limits);
+        Ok(())
+    }
     pub fn pending_dns_count(&self) -> usize {
-        self.dns_pending.values().map(Vec::len).sum()
+        self.dns_pending.len()
     }
     pub fn flow_count(&self) -> usize {
         self.sockets.len()
@@ -414,9 +444,10 @@ impl<P: SocketProtector> UdpRelay<P> {
     }
 }
 
-/// Unix/Android bridge for protecting the actual native sockets owned by Rust.
+/// Safe `poll(2)` readiness wait shared by the TCP and UDP relays.
 #[cfg(unix)]
 pub mod event;
+/// Unix/Android bridge for protecting the actual native sockets owned by Rust.
 #[cfg(unix)]
 pub mod fd_protection;
 /// Packet-oriented TCP proxy using a bounded userspace TCP stack and protected upstream streams.
@@ -437,4 +468,11 @@ fn unsupported_endpoint(metadata: &netscope_packet::Packet) -> bool {
         IpAddr::V6(ip) => ip.is_unspecified() || ip.is_multicast() || ip.to_ipv4_mapped().is_some(),
     };
     destination || source || metadata.source_port == 0 || metadata.destination_port == 0
+}
+
+/// Development-only pure DNS transaction state oracle; performs no network I/O.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn exercise_dns_transactions(bytes: &[u8]) {
+    dns_pending::exercise(bytes);
 }

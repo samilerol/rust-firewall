@@ -1,4 +1,4 @@
-//! JNI adapter for a diagnostic drop-all VPN. No TUN FD, socket or forwarding ownership.
+//! JNI adapter for the Android diagnostic and forwarding preview. Java owns the TUN.
 use jni::{
     objects::{JByteArray, JClass},
     sys::jint,
@@ -102,6 +102,5 @@ pub mod udp_session;
 #[cfg(unix)]
 mod udp_session_jni;
 
-/// Session-scoped TCP+UDP forwarding kernel (no JNI, no TUN ownership); unix only.
 #[cfg(unix)]
-pub mod forwarding_session;
+mod forwarding;

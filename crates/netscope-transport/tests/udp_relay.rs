@@ -270,32 +270,6 @@ fn oversized_reply_is_dropped_instead_of_fragmented_or_truncated() {
     assert_eq!(&receive(&mut r, sent.flow).unwrap()[28..], b"ok");
     worker.join().unwrap();
 }
-#[test]
-fn authorized_replies_extend_the_idle_lease_but_silence_still_expires() {
-    let server = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let endpoint = server.local_addr().unwrap();
-    let (mut r, _) = relay(1, Action::Allow, false); // idle timeout is 10 ticks
-    let sent = r.send(&request(endpoint, 1, b"a"), 0).unwrap();
-    let mut buffer = [0; 20];
-    let (_, peer) = server.recv_from(&mut buffer).unwrap();
-    server.send_to(b"r1", peer).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let reply = loop {
-        match r.receive(sent.flow, 9) {
-            Err(RelayError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
-                assert!(Instant::now() < deadline);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            other => break other.unwrap(),
-        }
-    };
-    assert_eq!(&reply[28..], b"r1");
-    // Without the reply the flow would have expired at tick 10.
-    assert_eq!(r.expire(18).unwrap(), 0);
-    assert_eq!(r.flow_count(), 1);
-    assert_eq!(r.expire(19).unwrap(), 1);
-    assert_eq!(r.flow_count(), 0);
-}
 
 #[test]
 fn empty_datagrams_and_same_flow_socket_reuse_are_preserved() {
@@ -349,6 +323,65 @@ fn relay_configuration_and_zero_capacity_do_not_allocate_sockets() {
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn receive_budget_rotates_past_idle_sockets_and_expires_at_zero() {
+    let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+    server
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let endpoint = server.local_addr().unwrap();
+    let (mut relay, _) = relay(2, Action::Allow, false);
+    relay.send(&request(endpoint, 1234, b"idle"), 0).unwrap();
+    let mut buffer = [0; 32];
+    server.recv_from(&mut buffer).unwrap();
+    let active = relay.send(&request(endpoint, 1235, b"active"), 0).unwrap();
+    let (n, peer) = server.recv_from(&mut buffer).unwrap();
+    server.send_to(&buffer[..n], peer).unwrap();
+    assert!(relay.receive_next(1, 1).unwrap().is_none());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reply = loop {
+        if let Some(reply) = relay.receive_next(1, 1).unwrap() {
+            break reply;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(reply.flow, active.flow);
+    assert_eq!(&reply.result.unwrap()[28..], b"active");
+    // The silent flow expires at tick 10; the one whose reply arrived at tick 1 is refreshed to 11.
+    assert!(relay.receive_next(10, 0).unwrap().is_none());
+    assert_eq!(relay.flow_count(), 1);
+    assert!(relay.receive_next(11, 0).unwrap().is_none());
+    assert_eq!(relay.flow_count(), 0);
+}
+#[test]
+fn authorized_replies_extend_the_idle_lease_but_silence_still_expires() {
+    let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let endpoint = server.local_addr().unwrap();
+    let (mut r, _) = relay(1, Action::Allow, false); // idle timeout is 10 ticks
+    let sent = r.send(&request(endpoint, 1, b"a"), 0).unwrap();
+    let mut buffer = [0; 20];
+    let (_, peer) = server.recv_from(&mut buffer).unwrap();
+    server.send_to(b"r1", peer).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reply = loop {
+        match r.receive(sent.flow, 9) {
+            Err(RelayError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            other => break other.unwrap(),
+        }
+    };
+    assert_eq!(&reply[28..], b"r1");
+    // Without the reply the flow would have expired at tick 10.
+    assert_eq!(r.expire(18).unwrap(), 0);
+    assert_eq!(r.flow_count(), 1);
+    assert_eq!(r.expire(19).unwrap(), 1);
+    assert_eq!(r.flow_count(), 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn wait_ready_reports_only_flows_with_a_datagram_and_honors_deadlines() {
@@ -431,7 +464,12 @@ fn wait_ready_reports_only_flows_with_a_datagram_and_honors_deadlines() {
 }
 #[test]
 fn uid_policy_gates_admission_and_the_flow_context_authorizes_replies() {
-    let (endpoint, server) = echo("127.0.0.1:0");
+    // A server that stays open, so a second datagram of the flow is never refused.
+    let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+    server
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let endpoint = server.local_addr().unwrap();
     let allow = Rule {
         priority: 0,
         action: Action::Allow,
@@ -489,7 +527,10 @@ fn uid_policy_gates_admission_and_the_flow_context_authorizes_replies() {
     };
     let sent = r.send_in(&datagram, 0, &app).unwrap();
     // The reply is admitted with the stored context; a later send with another context is ignored.
+    let mut buffer = [0; 32];
+    let (n, peer) = server.recv_from(&mut buffer).unwrap();
+    assert_eq!(&buffer[..n], b"hello");
+    server.send_to(&buffer[..n], peer).unwrap();
     r.send_in(&datagram, 1, &wrong_uid).unwrap();
     assert_eq!(&receive(&mut r, sent.flow).unwrap()[28..], b"hello");
-    server.join().unwrap();
 }

@@ -3,6 +3,7 @@ use libfuzzer_sys::fuzz_target;
 use netscope_dns::{decode_name, parse_query, parse_response, DomainName, DomainPolicy};
 use netscope_policy::Action;
 fuzz_target!(|bytes: &[u8]| {
+    netscope_transport::exercise_dns_transactions(bytes);
     let deny = DomainPolicy::new(vec![], Action::Deny).unwrap();
     for parsed in [parse_query(bytes), parse_response(bytes)] {
         if let Ok(message) = parsed {

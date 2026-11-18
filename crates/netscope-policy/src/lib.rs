@@ -1,5 +1,4 @@
 //! Lower numeric priority wins; equal priorities use input order. Default is explicit.
-pub mod config;
 use netscope_packet::{Packet, Protocol};
 use std::{net::IpAddr, ops::RangeInclusive};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,6 +13,28 @@ pub struct Cidr {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidPrefix;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CidrParseError {
+    MissingPrefix,
+    InvalidAddress,
+    InvalidPrefix,
+}
+
+impl std::str::FromStr for Cidr {
+    type Err = CidrParseError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (address, prefix) = text.split_once('/').ok_or(CidrParseError::MissingPrefix)?;
+        let address = address
+            .parse()
+            .map_err(|_| CidrParseError::InvalidAddress)?;
+        if !(1..=3).contains(&prefix.len()) || !prefix.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(CidrParseError::InvalidPrefix);
+        }
+        let prefix = prefix.parse().map_err(|_| CidrParseError::InvalidPrefix)?;
+        Self::new(address, prefix).map_err(|_| CidrParseError::InvalidPrefix)
+    }
+}
 impl Cidr {
     pub fn new(network: IpAddr, prefix: u8) -> Result<Self, InvalidPrefix> {
         if prefix > if network.is_ipv4() { 32 } else { 128 } {
@@ -522,3 +543,32 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod cidr_text_tests {
+    use super::*;
+
+    #[test]
+    fn text_preserves_family_and_prefix_boundaries() {
+        let v4: Cidr = "192.0.2.65/26".parse().unwrap();
+        assert!(v4.contains("192.0.2.127".parse().unwrap()));
+        assert!(!v4.contains("192.0.2.128".parse().unwrap()));
+        let v6: Cidr = "2001:db8::1/128".parse().unwrap();
+        assert!(v6.contains("2001:db8::1".parse().unwrap()));
+        assert!(!v6.contains("2001:db8::2".parse().unwrap()));
+        for text in [
+            "192.0.2.1",
+            "192.0.2.1/33",
+            "2001:db8::/129",
+            "192.0.2.1/+1",
+            "2001:db8::/64/2",
+            "192.0.2.1/ 1",
+            "not-an-ip/0",
+        ] {
+            assert!(text.parse::<Cidr>().is_err(), "{text}");
+        }
+    }
+}
+
+/// Bounded versioned packet-policy text input.
+pub mod config;

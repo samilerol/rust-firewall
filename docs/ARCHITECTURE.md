@@ -18,6 +18,22 @@ The platform adapter and Android project are described in ANDROID_INTEGRATION.md
 
 The netscope-engine and netscope-transport crates implement checked admission and bounded nonblocking UDP socket relay. See ENGINE_TRANSPORT.md for response authorization, transactional policy revocation, endpoint/MTU restrictions and protection-before-connect. UDP/admission use std/internal workspace dependencies; the TCP module adds the pinned dependencies reviewed in TCP_TRANSPORT.md. Experimental TCP forwarding is implemented by a separate bounded module; platform event loops, Android socket protection and production UI remain separate work.
 
-The relay optionally calls netscope-dns for explicitly selected UDP ports, with one pending canonical question/ID per flow and current response-policy checks. DNS policy cannot grant IP permission. See DNS_POLICY.md for conservative parsing profiles, state revocation and bypass/encryption limitations.
+The relay optionally calls netscope-dns for explicitly selected UDP ports, with bounded concurrent canonical question/ID transactions per flow, independent first-send expiry and current response-policy checks. DNS policy cannot grant IP permission. See DNS_POLICY.md for conservative parsing profiles, state revocation and bypass/encryption limitations.
 
-TCP uses smoltcp for a virtual per-flow raw-IP TCP endpoint and a protected nonblocking OS TCP stream for upstream bytes. Accepted SYN precedes upstream creation; OS read/write buffers are bridged with bounded zero-extra-queue closures. See TCP_TRANSPORT.md for limits, dependency/MSRV choice, scheduling, teardown, half-close and unimplemented TCP DNS semantics.
+TCP uses smoltcp for a virtual per-flow raw-IP TCP endpoint and a protected nonblocking OS TCP stream for upstream bytes. Accepted SYN precedes upstream creation; OS read/write buffers are bridged with bounded zero-extra-queue closures. See TCP_TRANSPORT.md for limits, dependency/MSRV choice, scheduling, teardown, half-close and optional TCP DNS framing/semantics (TCP_DNS.md).
+
+The TCP DNS guard uses two bounded complete-frame buffers per selected flow, with global/per-flow pending ID budgets shared in design with UDP but owned separately. Unvalidated prefixes never enter the opposite stream; partial writes preserve ownership and invalid/expired stream transactions revoke their flow. See TCP_DNS.md.
+
+Typed CIDRs can be parsed from `address/prefix` strings via `FromStr`. The prefix is one to three ASCII decimal digits and must fit the address family. Host bits retain the same matching semantics as typed construction.
+
+`netscope_policy::config::load` accepts a UTF-8 reader and returns a compiled packet policy. It reads at most 256 KiB plus one detection byte and permits at most 4096 rules. The caller supplies the reader and controls when to replace an active policy. A load error returns no partial policy.
+
+```text
+netscope-policy 1
+default deny
+# priority action protocol source destination source-port destination-port
+rule 10 allow tcp 192.0.2.0/24 * * 443
+rule 20 deny udp * 2001:db8::/32 * 53-54
+```
+
+Blank lines and full-line comments are accepted. Rules use ASCII whitespace between fields. Use `*` for any protocol, endpoint or port. Ports accept a decimal number or inclusive range. Rule order breaks priority ties. The version header and explicit default are required.

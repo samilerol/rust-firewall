@@ -65,8 +65,6 @@ pub(super) fn exercise(input: &[u8]) {
             buffer_budget: 8192,
             idle_timeout_ms: 1000,
             connect_timeout_ms: 100,
-            max_pending: 1,
-            max_flows_per_uid: 1,
         };
         let id = FlowId {
             source: source.parse().unwrap(),

@@ -1,200 +1,167 @@
-//! Strict, bounded text format for packet policies. No dependencies, no partial results:
-//! any problem rejects the whole configuration with a line number.
-//!
-//! ```text
-//! # comment
-//! default deny
-//! allow priority=10 proto=tcp dst=10.0.0.0/8 dport=443 uid=10001-10099 network=wifi
-//! deny  dst=203.0.113.0/24
-//! ```
-//!
-//! Exactly one `default allow|deny` line is required. A rule line is `allow|deny` followed by
-//! unique `key=value` tokens: `priority` (u32, default 0), `proto` (`tcp`|`udp`), `src`/`dst`
-//! (CIDR), `sport`/`dport` (`N` or `A-B`), `uid` (`N`, `A-B` or `unknown`) and `network`
-//! (`wifi`|`cellular`|`other`|`unknown`). Rules keep their file order as the tie-break among
-//! equal priorities, exactly like [`Policy::new`]. The text must be UTF-8 and every limit below
-//! is enforced before anything is allocated for the data it bounds.
-use crate::{Action, Cidr, ContextRule, Network, Policy, PolicyError, Rule, UidMatch, MAX_RULES};
+//! Load versioned packet rules from a bounded UTF-8 stream.
+use crate::{Action, Policy, PolicyError, Rule, MAX_RULES};
 use netscope_packet::Protocol;
-use std::{io::Read, net::IpAddr, ops::RangeInclusive};
+use std::{
+    io::{self, Read},
+    ops::RangeInclusive,
+    str::FromStr,
+};
 
-/// Largest accepted configuration, in bytes.
-pub const MAX_CONFIG_BYTES: usize = 512 * 1024;
-/// Largest accepted line, in bytes.
-pub const MAX_LINE_BYTES: usize = 512;
-/// Most `key=value` tokens on one rule line (there are only eight distinct keys).
-const MAX_TOKENS: usize = 9;
+pub const MAX_BYTES: usize = 256 * 1024;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ConfigErrorKind {
+#[derive(Debug)]
+pub enum LoadError {
+    Io(io::Error),
     TooLarge,
-    NotUtf8,
-    Io,
-    LineTooLong,
+    InvalidUtf8,
+    MissingHeader,
     MissingDefault,
-    DuplicateDefault,
-    UnknownDirective,
-    UnknownKey,
-    DuplicateKey,
-    TooManyTokens,
-    BadValue,
-    TooManyRules,
+    InvalidLine { line: usize },
     Policy(PolicyError),
 }
-/// Why a configuration was rejected. `line` is 1-based, 0 when not tied to a line.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConfigError {
-    pub line: usize,
-    pub kind: ConfigErrorKind,
-}
-fn error<T>(line: usize, kind: ConfigErrorKind) -> Result<T, ConfigError> {
-    Err(ConfigError { line, kind })
-}
 
-/// Parse a policy from a reader, reading at most [`MAX_CONFIG_BYTES`] + 1 bytes.
-pub fn parse_policy_from(reader: impl Read) -> Result<Policy, ConfigError> {
+/// Read at most MAX_BYTES + 1 bytes and build an immutable policy.
+/// The first two nonblank, noncomment lines must be the version and default.
+pub fn load(reader: impl Read) -> Result<Policy, LoadError> {
     let mut bytes = Vec::new();
     reader
-        .take(MAX_CONFIG_BYTES as u64 + 1)
+        .take((MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .or_else(|_| error(0, ConfigErrorKind::Io))?;
-    parse_policy(&bytes)
+        .map_err(LoadError::Io)?;
+    if bytes.len() > MAX_BYTES {
+        return Err(LoadError::TooLarge);
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| LoadError::InvalidUtf8)?;
+    let mut lines = text.lines().enumerate().filter_map(|(index, line)| {
+        let line = line.trim_ascii();
+        (!line.is_empty() && !line.starts_with('#')).then_some((index + 1, line))
+    });
+    let (line, header) = lines.next().ok_or(LoadError::MissingHeader)?;
+    if header != "netscope-policy 1" {
+        return Err(LoadError::InvalidLine { line });
+    }
+    let (line, default) = lines.next().ok_or(LoadError::MissingDefault)?;
+    let default = default
+        .strip_prefix("default ")
+        .and_then(action)
+        .ok_or(LoadError::InvalidLine { line })?;
+    let mut rules = Vec::new();
+    for (line, text) in lines {
+        if rules.len() == MAX_RULES {
+            return Err(LoadError::Policy(PolicyError::TooManyRules {
+                limit: MAX_RULES,
+            }));
+        }
+        rules.push(rule(text).ok_or(LoadError::InvalidLine { line })?);
+    }
+    Policy::new(rules, default).map_err(LoadError::Policy)
 }
 
-/// Parse a policy from bytes. Never panics on any input.
-pub fn parse_policy(bytes: &[u8]) -> Result<Policy, ConfigError> {
-    if bytes.len() > MAX_CONFIG_BYTES {
-        return error(0, ConfigErrorKind::TooLarge);
+fn action(value: &str) -> Option<Action> {
+    match value {
+        "allow" => Some(Action::Allow),
+        "deny" => Some(Action::Deny),
+        _ => None,
     }
-    let text = std::str::from_utf8(bytes).or_else(|_| error(0, ConfigErrorKind::NotUtf8))?;
-    let mut default = None;
-    let mut rules: Vec<ContextRule> = Vec::new();
-    for (index, line) in text.split('\n').enumerate() {
-        let number = index + 1;
-        if line.len() > MAX_LINE_BYTES {
-            return error(number, ConfigErrorKind::LineTooLong);
-        }
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        let content = line.split('#').next().unwrap_or("").trim();
-        if content.is_empty() {
-            continue;
-        }
-        let mut tokens = content.split_whitespace();
-        let directive = tokens.next().unwrap_or("");
-        match directive {
-            "default" => {
-                let action = match (tokens.next(), tokens.next()) {
-                    (Some(word), None) => action(word, number)?,
-                    _ => return error(number, ConfigErrorKind::BadValue),
-                };
-                if default.replace(action).is_some() {
-                    return error(number, ConfigErrorKind::DuplicateDefault);
-                }
-            }
-            "allow" | "deny" => {
-                if rules.len() == MAX_RULES {
-                    return error(number, ConfigErrorKind::TooManyRules);
-                }
-                rules.push(rule(action(directive, number)?, tokens, number)?);
-            }
-            _ => return error(number, ConfigErrorKind::UnknownDirective),
-        }
-    }
-    let Some(default) = default else {
-        return error(0, ConfigErrorKind::MissingDefault);
-    };
-    Policy::with_context_rules(rules, default).map_err(|e| ConfigError {
-        line: 0,
-        kind: ConfigErrorKind::Policy(e),
-    })
 }
 
-fn action(word: &str, line: usize) -> Result<Action, ConfigError> {
-    match word {
-        "allow" => Ok(Action::Allow),
-        "deny" => Ok(Action::Deny),
-        _ => error(line, ConfigErrorKind::BadValue),
+fn decimal<T: FromStr>(value: &str) -> Option<T> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn optional<T>(value: &str, parse: impl FnOnce(&str) -> Option<T>) -> Option<Option<T>> {
+    if value == "*" {
+        Some(None)
+    } else {
+        parse(value).map(Some)
     }
 }
-fn rule<'a>(
-    action: Action,
-    tokens: impl Iterator<Item = &'a str>,
-    line: usize,
-) -> Result<ContextRule, ConfigError> {
-    let mut out = ContextRule {
-        rule: Rule {
-            priority: 0,
-            action,
-            source: None,
-            destination: None,
-            protocol: None,
-            source_port: None,
-            destination_port: None,
-        },
-        uid: None,
-        network: None,
+
+fn ports(value: &str) -> Option<RangeInclusive<u16>> {
+    let (first, last) = value.split_once('-').unwrap_or((value, value));
+    let (first, last) = (decimal(first)?, decimal(last)?);
+    (first <= last).then_some(first..=last)
+}
+
+fn rule(text: &str) -> Option<Rule> {
+    let mut fields = text.split_ascii_whitespace();
+    if fields.next()? != "rule" {
+        return None;
+    }
+    let rule = Rule {
+        priority: decimal(fields.next()?)?,
+        action: action(fields.next()?)?,
+        protocol: optional(fields.next()?, |value| match value {
+            "tcp" => Some(Protocol::Tcp),
+            "udp" => Some(Protocol::Udp),
+            _ => None,
+        })?,
+        source: optional(fields.next()?, |value| value.parse().ok())?,
+        destination: optional(fields.next()?, |value| value.parse().ok())?,
+        source_port: optional(fields.next()?, ports)?,
+        destination_port: optional(fields.next()?, ports)?,
     };
-    let mut seen: Vec<&str> = Vec::new();
-    for token in tokens {
-        if seen.len() == MAX_TOKENS {
-            return error(line, ConfigErrorKind::TooManyTokens);
-        }
-        let Some((key, value)) = token.split_once('=') else {
-            return error(line, ConfigErrorKind::UnknownKey);
+    fields.next().is_none().then_some(rule)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use netscope_packet::Packet;
+
+    #[test]
+    fn loaded_policy_preserves_input_order_and_uses_explicit_default() {
+        let text = b"# example\nnetscope-policy 1\ndefault deny\nrule 10 allow tcp 192.0.2.0/24 * * 443-444\nrule 10 deny tcp * * * 443\n";
+        let policy = load(&text[..]).unwrap();
+        let mut packet = Packet {
+            source: "192.0.2.2".parse().unwrap(),
+            destination: "198.51.100.1".parse().unwrap(),
+            source_port: 1024,
+            destination_port: 443,
+            protocol: Protocol::Tcp,
+            length: 40,
         };
-        if seen.contains(&key) {
-            return error(line, ConfigErrorKind::DuplicateKey);
-        }
-        let bad = || ConfigError {
-            line,
-            kind: ConfigErrorKind::BadValue,
-        };
-        match key {
-            "priority" => out.rule.priority = value.parse().map_err(|_| bad())?,
-            "proto" => {
-                out.rule.protocol = Some(match value {
-                    "tcp" => Protocol::Tcp,
-                    "udp" => Protocol::Udp,
-                    _ => return Err(bad()),
-                })
-            }
-            "src" => out.rule.source = Some(cidr(value).ok_or_else(bad)?),
-            "dst" => out.rule.destination = Some(cidr(value).ok_or_else(bad)?),
-            "sport" => out.rule.source_port = Some(range::<u16>(value).ok_or_else(bad)?),
-            "dport" => out.rule.destination_port = Some(range::<u16>(value).ok_or_else(bad)?),
-            "uid" => {
-                out.uid = Some(if value == "unknown" {
-                    UidMatch::Unknown
-                } else {
-                    UidMatch::Range(range::<u32>(value).ok_or_else(bad)?)
-                })
-            }
-            "network" => {
-                out.network = Some(match value {
-                    "wifi" => Network::Wifi,
-                    "cellular" => Network::Cellular,
-                    "other" => Network::Other,
-                    "unknown" => Network::Unknown,
-                    _ => return Err(bad()),
-                })
-            }
-            _ => return error(line, ConfigErrorKind::UnknownKey),
-        }
-        seen.push(key);
+        assert_eq!(policy.decide(&packet).rule_index, Some(0));
+        assert_eq!(policy.decide(&packet).action, Action::Allow);
+        packet.protocol = Protocol::Udp;
+        assert_eq!(policy.decide(&packet).rule_index, None);
+        assert_eq!(policy.decide(&packet).action, Action::Deny);
     }
-    Ok(out)
-}
-fn cidr(value: &str) -> Option<Cidr> {
-    let (address, prefix) = value.split_once('/')?;
-    Cidr::new(address.parse::<IpAddr>().ok()?, prefix.parse().ok()?).ok()
-}
-/// `N` or `A-B` (inclusive). An inverted range is kept so the policy rejects it with its index.
-fn range<T: std::str::FromStr + Copy>(value: &str) -> Option<RangeInclusive<T>> {
-    match value.split_once('-') {
-        Some((a, b)) => Some(RangeInclusive::new(a.parse().ok()?, b.parse().ok()?)),
-        None => {
-            let n = value.parse().ok()?;
-            Some(RangeInclusive::new(n, n))
+
+    #[test]
+    fn rejects_invalid_late_rules_and_bounds_reader_and_rule_count() {
+        let header = "netscope-policy 1\ndefault deny\n";
+        for rule in [
+            "default allow",
+            "rule 1 allow tcp * * * 2-1",
+            "rule 1 allow icmp * * * *",
+            "rule +1 allow tcp * * * *",
+            "rule 1 allow tcp * * * * trailing",
+        ] {
+            let text = format!("{header}rule 1 allow tcp * * * 443\n{rule}");
+            assert!(matches!(
+                load(text.as_bytes()),
+                Err(LoadError::InvalidLine { line: 4 })
+            ));
         }
+        assert!(matches!(load(io::repeat(b' ')), Err(LoadError::TooLarge)));
+        assert!(matches!(load(&[0xff][..]), Err(LoadError::InvalidUtf8)));
+        assert!(matches!(
+            load(b"netscope-policy 1\n".as_slice()),
+            Err(LoadError::MissingDefault)
+        ));
+        let text = format!(
+            "{header}{}",
+            "rule 0 deny * * * * *\n".repeat(MAX_RULES + 1)
+        );
+        assert!(matches!(
+            load(text.as_bytes()),
+            Err(LoadError::Policy(PolicyError::TooManyRules {
+                limit: MAX_RULES
+            }))
+        ));
     }
 }

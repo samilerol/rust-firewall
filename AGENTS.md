@@ -1,6 +1,6 @@
 # Agent instructions
 
-Read README.md and docs/PROJECT_CONTEXT.md, ARCHITECTURE.md, SECURITY_MODEL.md, DECISIONS.md and ROADMAP.md before changes.
+Read docs/CURRENT_STATUS.md, README.md and docs/PROJECT_CONTEXT.md, ARCHITECTURE.md, SECURITY_MODEL.md, DECISIONS.md and ROADMAP.md before changes.
 
 - Develop independently. Never access, change, expose or copy private `samilerol/netscope` code.
 - Rust-first portable security core. Target 95% Rust where practical; correctness overrides percentage. Minimal Kotlin/Java only for Android APIs. Prefer evaluated Rust-native UI; Flutter requires owner approval.
@@ -20,4 +20,4 @@ Read README.md and docs/PROJECT_CONTEXT.md, ARCHITECTURE.md, SECURITY_MODEL.md, 
 
 - Read docs/DNS_POLICY.md before DNS changes. Preserve bounded compression/message/record work, label-boundary matching, ID/question correlation, explicit port activation, no domain-allow override of packet policy, and pending-state cleanup. Never relabel question-only filtering as encrypted DNS, alias-chain or DNSSEC protection.
 
-- Read docs/TCP_TRANSPORT.md before TCP changes. Require accepted initial SYN before upstream creation and protection before connect. Preserve bounded queues/partial-write consumption, half-close/RST/TIME-WAIT behavior, inbound policy checks and microsecond-safe clocks. No TCP DNS filtering or device guarantee follows from generic TCP relay. Dependency advisory/license/source checks must pass for new runtime dependencies.
+- Read docs/TCP_TRANSPORT.md and docs/TCP_DNS.md before TCP changes. Require accepted initial SYN before upstream creation and protection before connect. Preserve bounded queues/partial-write consumption, half-close/RST/TIME-WAIT behavior, inbound policy checks and microsecond-safe clocks. TCP DNS filtering requires explicit guard activation; it and generic TCP imply no encrypted-DNS or device guarantee. Dependency advisory/license/source checks must pass for new runtime dependencies.

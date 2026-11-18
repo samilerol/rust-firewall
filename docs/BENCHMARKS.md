@@ -20,10 +20,6 @@ Smoke mode performs 100 iterations with three measured samples; baseline perform
 - Ten policy cases: empty/default-deny, then 64/512/4096 rules with matching first, matching last or no matching rule. These rules filter TCP and destination port; CIDR and source-port costs are not measured by these cases. Policy creation is outside timing. The pre-optimization reference scans all rules. Current policy compiles precedence and stops at a match; first/last here denote ORIGINAL input positions and the matching rule has priority 0, so both can move to the front after compilation. Miss cases remain full scans.
 - Sixteen flow cases: 1/64/512/4096 directional entries, with unique insertion, existing-flow refresh, full-table new-flow rejection and batch expiration of all entries. Insertion/refresh/rejection include the real expiry operation (O(F) sweep in the reference, due-only ordered expiry in the current code); timestamps remain fixed during a batch to prevent accidental expiration. Batch expiration uses one operation per sample and its ns/op is per whole-table drain, not per flow; short drains have particularly high timer noise. Table setup is outside those measurements. HashMap randomization and allocator behavior introduce run-to-run variation.
 
-## Policy scaling measurement
-
-A smoke run (`--smoke`, release, loopback of nothing: pure CPU, one shared host) showed a non-matching packet costing about 150 ns at 64 rules, 1.1 microseconds at 512 and 8.6 microseconds at 4096 (a full linear scan, roughly 2 ns per rule), while a matching rule at the front costs about 9 ns. Realistic phone rule sets are far below the cap and domain lists use the separate DNS policy, so no rule index has been added; revisit it if a rule set near the 4096 cap needs to run at tens of thousands of packets per second.
-
 ## CI and comparisons
 
 The separate ten-minute benchmark job runs on standard ubuntu-24.04 with two build workers. It uploads raw.csv, summary.md, build-and-run.log and environment.txt for seven days. The latter records actual checkout SHA (a synthetic merge SHA for PR runs), rustc version/host, kernel, CPU, RAM and disk. No fixed runner specifications are assumed. Compare repeated runs on the same host/toolchain/profile and input sizes; shared hosted-runner results are noisy. Case order is fixed; thermal/frequency/order effects are not controlled. A fixed workload is reproducible, but exact timings are not.
@@ -39,3 +35,7 @@ CI additionally checks out immutable pre-optimization eade0426c803aabb59cd462671
 ## DNS additions (six cases; 37 total)
 
 New current-only cases measure standard query parsing, compressed response parsing, and domain-rule hit/miss evaluation at 64/4096 rules. Construction and fixture checks are outside timing. Matching rules have explicit priority 0; miss cases scan the compiled list. Parsing includes owned normalized question-name allocation. Historical same-runner comparison remains limited to the 31 common core cases; DNS is a new baseline with no previous-version ratio. Smoke now emits 149 CSV lines; baseline emits 297.
+
+## Policy scaling measurement
+
+A smoke run (release, one shared host) showed a non-matching packet costing about 150 ns at 64 rules, 1.1 microseconds at 512 and 8.6 microseconds at 4096 (a full linear scan, roughly 2 ns per rule), while a matching rule at the front costs about 9 ns. Realistic phone rule sets are far below the cap and domain lists use the separate DNS policy, so no rule index has been added; revisit it if a rule set near the 4096 cap must run at tens of thousands of packets per second.

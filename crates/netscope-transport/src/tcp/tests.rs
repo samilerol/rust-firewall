@@ -38,8 +38,6 @@ fn config() -> Config {
         buffer_budget: 64 * 1024,
         idle_timeout_ms: 30000,
         connect_timeout_ms: 1000,
-        max_pending: 2,
-        max_flows_per_uid: 2,
     }
 }
 fn relay(action: Action, fail: bool) -> (TcpRelay<Protector>, Arc<AtomicUsize>) {
@@ -330,8 +328,6 @@ fn capacity_clock_budget_and_first_syn_are_explicit() {
     let (mut relay, calls) = relay(Action::Allow, false);
     let mut cfg = config();
     cfg.max_flows = 0;
-    cfg.max_pending = 0;
-    cfg.max_flows_per_uid = 0;
     let mut zero = TcpRelay::new(
         Policy::new(vec![], Action::Allow).unwrap(),
         cfg,
@@ -349,8 +345,7 @@ fn capacity_clock_budget_and_first_syn_are_explicit() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     for cfg in [
         Config {
-            max_flows: MAX_FLOWS + 1,
-            buffer_budget: MAX_BUFFER_BUDGET, // only the flow cap can reject this
+            max_flows: 65,
             ..config()
         },
         Config {
@@ -419,8 +414,6 @@ fn real_flow_capacity_and_policy_reset_revoke_queued_packets() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut cfg = config();
     cfg.max_flows = 1;
-    cfg.max_pending = 1;
-    cfg.max_flows_per_uid = 1;
     let mut r = TcpRelay::new(
         Policy::new(vec![], Action::Allow).unwrap(),
         cfg,
@@ -451,10 +444,7 @@ fn real_flow_capacity_and_policy_reset_revoke_queued_packets() {
     r.update_policy(vec![], Action::Deny).unwrap();
     assert_eq!(r.flow_count(), 0);
     // The queued SYN-ACK is revoked; the client is told with a RST instead.
-    let revoked = r.next_packet(0).unwrap().expect("RST for revoked flow");
-    let tcp = TcpPacket::new_checked(&revoked[20..]).unwrap();
-    assert!(tcp.rst() && !tcp.syn());
-    assert!(r.next_packet(0).unwrap().is_none());
+    assert_only_resets(&mut r, 0, 1);
     r.update_policy(vec![], Action::Allow).unwrap();
     let mut third = Client::with_port(endpoint, 12347);
     r.ingest(&third.syn(), 10).unwrap();
@@ -728,6 +718,84 @@ fn nonunicast_source_and_reserved_tcp_bits_do_not_open_sockets() {
         io::ErrorKind::WouldBlock
     );
 }
+
+#[path = "dns_tests.rs"]
+mod dns_tests;
+
+#[test]
+fn budget_rotates_service_independently_of_output_and_keeps_deadlines() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let (mut relay, _) = relay(Action::Allow, false);
+    let first = relay
+        .ingest(&Client::with_port(endpoint, 12345).syn(), 0)
+        .unwrap();
+    let second = relay
+        .ingest(&Client::with_port(endpoint, 12346).syn(), 0)
+        .unwrap();
+    relay.poll_with_budget(0, 0).unwrap();
+    assert_eq!(relay.pump_order.front(), Some(&first));
+    relay.poll_with_budget(0, 1).unwrap();
+    assert_eq!(relay.pump_order.front(), Some(&second));
+    while relay.next_packet(0).unwrap().is_some() {}
+    assert_eq!(relay.pump_order.front(), Some(&second));
+    relay.poll_with_budget(0, 1).unwrap();
+    assert_eq!(relay.pump_order.front(), Some(&first));
+    for flow in relay.flows.values_mut() {
+        flow.connecting = true;
+    }
+    let report = relay
+        .poll_with_budget(config().connect_timeout_ms, 0)
+        .unwrap();
+    assert_eq!(report.connect_timeouts, 2);
+    assert!(relay.flows.values().all(|flow| flow.upstream.is_none()));
+    relay.reset_network();
+    assert!(relay.pump_order.is_empty());
+}
+
+#[test]
+fn handshake_quota_rejects_new_flow_before_protection_and_recovers_after_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let (mut relay, calls) = relay(Action::Allow, false);
+    relay.set_handshake_limit(1).unwrap();
+    assert!(matches!(relay.set_handshake_limit(3), Err(Error::Config)));
+    let first = Client::with_port(endpoint, 12345).syn();
+    let second = Client::with_port(endpoint, 12346).syn();
+    relay.ingest(&first, 0).unwrap();
+    assert_eq!(relay.pending_handshakes(), 1);
+    assert!(matches!(
+        relay.ingest(&second, 0),
+        Err(Error::HandshakeCapacity)
+    ));
+    relay.ingest(&first, 0).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    relay.reset_network();
+    assert_eq!(relay.pending_handshakes(), 0);
+    relay.ingest(&second, 1).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+/// Poll until no upstream connect is pending (the OS may finish it a moment after `connect`).
+fn settle(r: &mut TcpRelay<Protector>, now: u64) {
+    let deadline = Wall::now() + Duration::from_secs(2);
+    while r.flows.values().any(|f| f.connecting && !f.failed) {
+        assert!(Wall::now() < deadline, "upstream connect never completed");
+        r.poll(now).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+/// Everything the relay still emits must be a payload-free RST (a discarded flow is reset, never
+/// answered with data); `expected` is the exact number of RSTs.
+fn assert_only_resets(r: &mut TcpRelay<Protector>, now: u64, expected: usize) {
+    let mut seen = 0;
+    while let Some(bytes) = r.next_packet(now).unwrap() {
+        let offset = if bytes[0] >> 4 == 4 { 20 } else { 40 };
+        let tcp = TcpPacket::new_checked(&bytes[offset..]).unwrap();
+        assert!(tcp.rst() && !tcp.syn() && tcp.payload().is_empty());
+        seen += 1;
+    }
+    assert_eq!(seen, expected);
+}
 fn client_state(client: &Client) -> State {
     client.sockets.get::<StackSocket>(client.handle).state()
 }
@@ -827,15 +895,6 @@ fn queued_resets_are_bounded() {
         queue_reset(&mut r.resets, limit, Some(vec![0; 40]));
     }
     assert_eq!(r.resets.len(), limit);
-}
-/// Poll until no upstream connect is pending (the OS may finish it a moment after `connect`).
-fn settle(r: &mut TcpRelay<Protector>, now: u64) {
-    let deadline = Wall::now() + Duration::from_secs(2);
-    while r.flows.values().any(|f| f.connecting && !f.failed) {
-        assert!(Wall::now() < deadline, "upstream connect never completed");
-        r.poll(now).unwrap();
-        std::thread::sleep(Duration::from_millis(1));
-    }
 }
 #[test]
 fn syn_ack_is_withheld_until_the_upstream_connect_completes() {
@@ -1348,367 +1407,4 @@ fn uid_policy_gates_tcp_admission_and_the_flow_context_authorizes_output() {
         r.ingest_in(&bytes, 1, &Context::default()).unwrap();
     }
     assert_eq!(r.flow_count(), 1);
-}
-fn quota_relay(
-    max_flows: usize,
-    max_pending: usize,
-    per_uid: usize,
-) -> (TcpRelay<Protector>, Arc<AtomicUsize>) {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let cfg = Config {
-        max_flows,
-        max_pending,
-        max_flows_per_uid: per_uid,
-        buffer_budget: MAX_BUFFER_BUDGET,
-        ..config()
-    };
-    (
-        TcpRelay::new(
-            Policy::new(vec![], Action::Allow).unwrap(),
-            cfg,
-            Protector {
-                calls: calls.clone(),
-                fail: false,
-            },
-        )
-        .unwrap(),
-        calls,
-    )
-}
-#[test]
-fn per_uid_quota_limits_one_app_without_starving_others() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    let (mut r, calls) = quota_relay(4, 4, 1);
-    let uid = |uid| Context {
-        uid,
-        ..Context::default()
-    };
-    let syn = |port| Client::with_port(endpoint, port).syn();
-    r.ingest_in(&syn(20001), 0, &uid(Some(10_001))).unwrap();
-    // The same uid is refused with no socket opened; another uid and the unknown bucket still fit.
-    assert!(matches!(
-        r.ingest_in(&syn(20002), 0, &uid(Some(10_001))),
-        Err(Error::Quota)
-    ));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    r.ingest_in(&syn(20003), 0, &uid(Some(10_002))).unwrap();
-    r.ingest_in(&syn(20004), 0, &uid(None)).unwrap();
-    assert_eq!(r.flow_count(), 3);
-    // A retransmitted SYN of an existing flow is not a new flow and is not refused.
-    r.ingest_in(&syn(20001), 0, &uid(Some(10_001))).unwrap();
-    // Once the flow is gone the uid may open again.
-    r.reset_network();
-    r.ingest_in(&syn(20002), 1, &uid(Some(10_001))).unwrap();
-}
-#[test]
-fn pending_handshake_quota_bounds_a_syn_burst_until_handshakes_finish() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    let (mut r, calls) = quota_relay(4, 1, 4);
-    let mut first = Client::with_port(endpoint, 20001);
-    let mut second = Client::with_port(endpoint, 20002);
-    r.ingest(&first.syn(), 0).unwrap();
-    let second_syn = second.syn();
-    assert!(matches!(r.ingest(&second_syn, 0), Err(Error::Quota)));
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "refused SYN opens no upstream"
-    );
-    assert_eq!(r.flow_count(), 1);
-    // Complete the first handshake; it stops counting as pending and the second may proceed.
-    for now in 0..20 {
-        first.step(&mut r, now);
-        if client_state(&first) == State::Established {
-            first.step(&mut r, now + 1);
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(client_state(&first), State::Established);
-    // The first client's final ACK was ingested, so its flow no longer counts as pending.
-    r.ingest(&second_syn, 30).unwrap();
-    assert_eq!(r.flow_count(), 2);
-}
-#[test]
-fn quotas_larger_than_the_flow_cap_are_rejected_at_construction() {
-    for (pending, per_uid) in [(3, 2), (2, 3)] {
-        let cfg = Config {
-            max_pending: pending,
-            max_flows_per_uid: per_uid,
-            ..config()
-        };
-        assert!(matches!(
-            TcpRelay::new(
-                Policy::new(vec![], Action::Allow).unwrap(),
-                cfg,
-                Protector {
-                    calls: Arc::new(AtomicUsize::new(0)),
-                    fail: false
-                }
-            ),
-            Err(Error::Config)
-        ));
-    }
-}
-fn dns_message(name: &str, id: u16, response: bool) -> Vec<u8> {
-    let mut b = vec![0; 12];
-    b[..2].copy_from_slice(&id.to_be_bytes());
-    b[2] = if response { 0x81 } else { 1 };
-    b[3] = if response { 0x80 } else { 0 };
-    b[5] = 1;
-    for label in name.split('.') {
-        b.push(label.len() as u8);
-        b.extend_from_slice(label.as_bytes());
-    }
-    b.extend_from_slice(&[0, 0, 1, 0, 1]);
-    b
-}
-fn dns_frame(message: &[u8]) -> Vec<u8> {
-    let mut out = (message.len() as u16).to_be_bytes().to_vec();
-    out.extend_from_slice(message);
-    out
-}
-fn dns_filter() -> netscope_dns::DomainPolicy {
-    use netscope_dns::{DomainName, DomainPolicy, Match, Rule as DomainRule};
-    DomainPolicy::new(
-        vec![DomainRule {
-            name: DomainName::new("blocked.example").unwrap(),
-            kind: Match::Exact,
-            priority: 0,
-            action: Action::Deny,
-        }],
-        Action::Allow,
-    )
-    .unwrap()
-}
-fn dns_relay(port: u16) -> TcpRelay<Protector> {
-    let (mut r, _) = relay(Action::Allow, false);
-    r.set_dns_filter(Some(dns_filter()), vec![port]).unwrap();
-    r
-}
-/// Drive a client that sends `request` and collects up to `expect` reply bytes; stops early when
-/// the relay resets it. Returns what it received, whether it was reset and the relay's I/O failures.
-fn dns_client(
-    client: &mut Client,
-    r: &mut TcpRelay<Protector>,
-    request: &[u8],
-    expect: usize,
-) -> (Vec<u8>, bool, usize) {
-    let (mut sent, mut received, mut failures, mut now) = (0, Vec::new(), 0, 0u64);
-    let start = Wall::now();
-    let mut reset = false;
-    while start.elapsed() < Duration::from_secs(6) {
-        failures += client.step(r, now).io_failures;
-        let socket = client.sockets.get_mut::<StackSocket>(client.handle);
-        if socket.can_send() && sent < request.len() {
-            sent += socket.send_slice(&request[sent..]).unwrap();
-        }
-        if socket.can_recv() {
-            socket
-                .recv(|bytes| {
-                    received.extend_from_slice(bytes);
-                    (bytes.len(), ())
-                })
-                .unwrap();
-        }
-        if expect > 0 && received.len() >= expect {
-            break;
-        }
-        if now > 10 && socket.state() == State::Closed {
-            reset = true;
-            break;
-        }
-        now += 5;
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    (received, reset, failures)
-}
-#[test]
-fn dns_over_tcp_forwards_allowed_concurrent_questions_and_delivers_whole_frames() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    let (a, aaaa) = (
-        dns_frame(&dns_message("ok.example", 1, false)),
-        dns_frame(&dns_message("ok.example", 2, false)),
-    );
-    let (answer_a, answer_aaaa) = (
-        dns_frame(&dns_message("ok.example", 1, true)),
-        dns_frame(&dns_message("ok.example", 2, true)),
-    );
-    let server = {
-        let (a, aaaa, answer_a, answer_aaaa) = (
-            a.clone(),
-            aaaa.clone(),
-            answer_a.clone(),
-            answer_aaaa.clone(),
-        );
-        std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut got = vec![0; a.len() + aaaa.len()];
-            stream.read_exact(&mut got).unwrap();
-            assert_eq!(&got[..a.len()], &a[..]);
-            assert_eq!(&got[a.len()..], &aaaa[..]);
-            // Answer the second question first, then split the first answer across two writes.
-            stream.write_all(&answer_aaaa).unwrap();
-            stream.write_all(&answer_a[..5]).unwrap();
-            std::thread::sleep(Duration::from_millis(40));
-            stream.write_all(&answer_a[5..]).unwrap();
-        })
-    };
-    let mut r = dns_relay(endpoint.port());
-    let mut client = Client::new(endpoint);
-    let mut request = a.clone();
-    request.extend_from_slice(&aaaa);
-    let expect = answer_a.len() + answer_aaaa.len();
-    let (received, reset, failures) = dns_client(&mut client, &mut r, &request, expect);
-    assert!(!reset && failures == 0);
-    let mut expected = answer_aaaa.clone();
-    expected.extend_from_slice(&answer_a);
-    assert_eq!(received, expected, "whole frames, in the server's order");
-    server.join().unwrap();
-}
-#[test]
-fn dns_over_tcp_blocked_name_resets_the_client_and_never_reaches_the_server() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut buffer = [0; 64];
-        // Either EOF or a reset, but never any query bytes.
-        matches!(stream.read(&mut buffer), Ok(0) | Err(_))
-    });
-    let mut r = dns_relay(endpoint.port());
-    let mut client = Client::new(endpoint);
-    let query = dns_frame(&dns_message("blocked.example", 7, false));
-    let (received, reset, failures) = dns_client(&mut client, &mut r, &query, 0);
-    assert!(reset && received.is_empty());
-    assert_eq!(failures, 1);
-    assert!(
-        server.join().unwrap(),
-        "server must not receive the denied query"
-    );
-}
-#[test]
-fn dns_over_tcp_unmatched_or_truncated_answers_never_reach_the_client() {
-    for truncate in [false, true] {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = listener.local_addr().unwrap();
-        let query = dns_frame(&dns_message("ok.example", 5, false));
-        let expected_query = query.clone();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut got = vec![0; expected_query.len()];
-            stream.read_exact(&mut got).unwrap();
-            if truncate {
-                // Half of a correct answer, then EOF.
-                let answer = dns_frame(&dns_message("ok.example", 5, true));
-                stream.write_all(&answer[..answer.len() - 3]).unwrap();
-            } else {
-                // Wrong transaction id.
-                stream
-                    .write_all(&dns_frame(&dns_message("ok.example", 6, true)))
-                    .unwrap();
-            }
-        });
-        let mut r = dns_relay(endpoint.port());
-        let mut client = Client::new(endpoint);
-        let (received, reset, failures) = dns_client(&mut client, &mut r, &query, 0);
-        assert!(reset && received.is_empty(), "truncate={truncate}");
-        assert_eq!(failures, 1, "truncate={truncate}");
-        server.join().unwrap();
-    }
-}
-#[test]
-fn dns_filter_configuration_is_validated_and_only_applies_to_selected_ports() {
-    let (mut r, _) = relay(Action::Allow, false);
-    assert!(r.set_dns_filter(Some(dns_filter()), vec![]).is_err());
-    assert!(r.set_dns_filter(None, vec![53]).is_err());
-    assert!(r.set_dns_filter(Some(dns_filter()), vec![0]).is_err());
-    assert!(r.set_dns_filter(Some(dns_filter()), vec![53, 53]).is_err());
-    // The per-DNS-flow inspection buffers must fit the memory budget.
-    let tight = Config {
-        buffer_budget: relay_budget(&config()),
-        ..config()
-    };
-    let mut tight = TcpRelay::new(
-        Policy::new(vec![], Action::Allow).unwrap(),
-        tight,
-        Protector {
-            calls: Arc::new(AtomicUsize::new(0)),
-            fail: false,
-        },
-    )
-    .unwrap();
-    assert!(tight.set_dns_filter(Some(dns_filter()), vec![53]).is_err());
-    r.set_dns_filter(Some(dns_filter()), vec![53]).unwrap();
-    r.set_dns_filter(None, vec![]).unwrap();
-    // A flow to a non-selected port is a plain stream: arbitrary bytes pass untouched.
-    echo(
-        "127.0.0.1:0",
-        b"not dns at all".to_vec(),
-        false,
-        Drive::Poll,
-    );
-}
-fn relay_budget(cfg: &Config) -> usize {
-    cfg.max_flows * (cfg.buffer_bytes * 2 + (cfg.output_slots + 1) * cfg.mtu)
-}
-#[test]
-fn dns_over_tcp_holds_a_partial_frame_until_it_is_complete() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = listener.local_addr().unwrap();
-    let mut r = dns_relay(endpoint.port());
-    let mut client = Client::new(endpoint);
-    for now in 0..4 {
-        client.step(&mut r, now);
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert_eq!(client_state(&client), State::Established);
-    let (mut server, _) = listener.accept().unwrap();
-    server.set_nonblocking(true).unwrap();
-    let frame = dns_frame(&dns_message("ok.example", 3, false));
-    let send = |client: &mut Client, bytes: &[u8]| {
-        client
-            .sockets
-            .get_mut::<StackSocket>(client.handle)
-            .send_slice(bytes)
-            .unwrap();
-    };
-    // Only the length prefix and part of the message: nothing may reach the server.
-    send(&mut client, &frame[..5]);
-    let mut got = Vec::new();
-    for now in 4..20 {
-        client.step(&mut r, now);
-        let mut buffer = [0; 64];
-        match server.read(&mut buffer) {
-            Ok(n) if n > 0 => got.extend_from_slice(&buffer[..n]),
-            _ => {}
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert!(got.is_empty(), "partial frame leaked upstream: {got:?}");
-    send(&mut client, &frame[5..]);
-    let start = Wall::now();
-    let mut now = 20;
-    while got.len() < frame.len() && start.elapsed() < Duration::from_secs(3) {
-        client.step(&mut r, now);
-        let mut buffer = [0; 64];
-        if let Ok(n) = server.read(&mut buffer) {
-            got.extend_from_slice(&buffer[..n]);
-        }
-        now += 1;
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(got, frame);
 }
