@@ -23,6 +23,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".TrafficActivity" android:exported="false" />
+        <activity android:name=".PerformanceActivity" android:exported="false" />
         <activity android:name=".ModemActivity" android:exported="false" />
         <service android:name=".DiagnosticVpnService" android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE" android:foregroundServiceType="specialUse">

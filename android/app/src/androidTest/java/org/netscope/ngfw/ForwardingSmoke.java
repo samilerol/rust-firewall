@@ -82,6 +82,8 @@ public final class ForwardingSmoke extends Instrumentation {
             awaitEcho(8080, null);
             phase = "Android modem diagnostics";
             requireModemScreen(screen);
+            phase = "live CPU and memory performance";
+            requirePerformanceScreen(screen);
             result.putString("stream", "NETSCOPE_FORWARDING_SMOKE_PASS\n");
             code = Activity.RESULT_OK;
         } catch (Exception | AssertionError error) {
@@ -210,6 +212,42 @@ public final class ForwardingSmoke extends Instrumentation {
             }
             if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("Live report did not appear");
             SystemClock.sleep(100);
+        }
+    }
+
+    private void requirePerformanceScreen(Activity screen) {
+        if (PerformanceActivity.cpuShare(100, 10, 300, 110) != 0.5
+            || PerformanceActivity.cpuShare(100, 10, 300, 310) != 1.5
+            || !Double.isNaN(PerformanceActivity.cpuShare(100, 10, 100, 10))) {
+            throw new AssertionError("CPU time share is incorrect");
+        }
+
+        ActivityMonitor monitor = addMonitor(PerformanceActivity.class.getName(), null, false);
+        runOnMainSync(() -> screen.findViewById(R.id.performance_action).performClick());
+        Activity performance = waitForMonitorWithTimeout(monitor, 5000);
+        removeMonitor(monitor);
+        if (performance == null) throw new AssertionError("Performance did not open");
+        try {
+            long deadline = SystemClock.elapsedRealtime() + 7500;
+            boolean[] sampled = {false};
+            while (SystemClock.elapsedRealtime() < deadline) {
+                runOnMainSync(() -> {
+                    String waiting = performance.getString(R.string.performance_waiting);
+                    String unavailable = performance.getString(R.string.performance_not_available);
+                    sampled[0] = true;
+                    for (int id : new int[]{R.id.performance_cpu, R.id.performance_app_ram, R.id.performance_device_ram}) {
+                        android.widget.TextView value = performance.findViewById(id);
+                        String text = value.getText().toString();
+                        if (text.isEmpty() || waiting.equals(text) || unavailable.equals(text)) sampled[0] = false;
+                    }
+                });
+                if (sampled[0]) return;
+                SystemClock.sleep(100);
+            }
+            throw new AssertionError("CPU or memory readings did not become available");
+        } finally {
+            runOnMainSync(performance::finish);
+            waitForIdleSync();
         }
     }
 

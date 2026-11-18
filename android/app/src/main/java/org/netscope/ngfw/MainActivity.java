@@ -274,6 +274,13 @@ public final class MainActivity extends Activity {
         styleButton(modem, SURFACE, TEXT, BORDER);
         modem.setOnClickListener(view -> startActivity(new Intent(this, ModemActivity.class)));
         add(body, modem, 8);
+
+        Button performance = button();
+        performance.setId(R.id.performance_action);
+        performance.setText(R.string.performance_title);
+        styleButton(performance, SURFACE, TEXT, BORDER);
+        performance.setOnClickListener(view -> startActivity(new Intent(this, PerformanceActivity.class)));
+        add(body, performance, 8);
     }
 
     private LinearLayout profileRow(int label, int value) {

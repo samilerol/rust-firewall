@@ -94,4 +94,19 @@
     <string name="modem_data_suspended">Suspended</string>
     <string name="modem_data_event">Mobile data · %1$s · %2$s</string>
     <string name="modem_signal_event">Android signal level · %1$d/4</string>
+    <item name="performance_action" type="id" />
+    <item name="performance_cpu" type="id" />
+    <item name="performance_app_ram" type="id" />
+    <item name="performance_device_ram" type="id" />
+    <string name="performance_title">Performance</string>
+    <string name="performance_scope">Measurements update every two seconds while this screen is open.</string>
+    <string name="performance_cpu">NetScope CPU</string>
+    <string name="performance_cpu_explanation">Process usage including VPN work. 100% equals one fully used CPU core.</string>
+    <string name="performance_app_ram">NetScope memory</string>
+    <string name="performance_app_ram_explanation">PSS counts private memory and a proportional share of shared memory.</string>
+    <string name="performance_device_ram">Device memory</string>
+    <string name="performance_device_ram_explanation">Memory Android reports as available and total usable by the system.</string>
+    <string name="performance_waiting">Measuring…</string>
+    <string name="performance_not_available">Unavailable</string>
+    <string name="performance_available">%1$s available of %2$s</string>
 </resources>

@@ -79,4 +79,15 @@
     <string name="modem_data_suspended">Askıya alındı</string>
     <string name="modem_data_event">Mobil veri · %1$s · %2$s</string>
     <string name="modem_signal_event">Android sinyal seviyesi · %1$d/4</string>
+    <string name="performance_title">Performans</string>
+    <string name="performance_scope">Bu ekran açıkken ölçümler iki saniyede bir güncellenir.</string>
+    <string name="performance_cpu">NetScope CPU</string>
+    <string name="performance_cpu_explanation">VPN işlemleri dahil NetScope kullanımı. Yüzde 100, bir işlemci çekirdeğinin tamamen kullanılmasıdır.</string>
+    <string name="performance_app_ram">NetScope belleği</string>
+    <string name="performance_app_ram_explanation">PSS, uygulamaya özel belleği ve paylaşılan bellekten düşen payı sayar.</string>
+    <string name="performance_device_ram">Cihaz belleği</string>
+    <string name="performance_device_ram_explanation">Android’in bildirdiği kullanılabilir bellek ve sistemin tanıdığı toplam bellek.</string>
+    <string name="performance_waiting">Ölçülüyor…</string>
+    <string name="performance_not_available">Kullanılamıyor</string>
+    <string name="performance_available">%1$s kullanılabilir / %2$s toplam</string>
 </resources>
