@@ -254,5 +254,11 @@ fn a_second_unsolicited_answer_cannot_reuse_consumed_transaction() {
         receive(&mut r, sent.flow),
         Err(RelayError::Dns(DnsError::Unsolicited))
     ));
-    assert_eq!(r.flow_count(), 0);
+    // The duplicate is discarded without revoking the flow, which stays usable.
+    assert_eq!(r.flow_count(), 1);
+    r.send(&datagram(endpoint, &query("safe.example", 2)), 1)
+        .unwrap();
+    let (n, peer) = s.recv_from(&mut b).unwrap();
+    s.send_to(&response(b[..n].to_vec()), peer).unwrap();
+    assert!(receive(&mut r, sent.flow).is_ok());
 }

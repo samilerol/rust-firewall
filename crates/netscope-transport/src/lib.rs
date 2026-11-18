@@ -182,6 +182,8 @@ impl<P: SocketProtector> UdpRelay<P> {
                     "partial UDP send",
                 )))
             }
+            // A full send buffer loses this datagram only; the flow and its socket stay.
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(RelayError::Io(error)),
             Err(error) => {
                 self.forget(&id);
                 Err(RelayError::Io(error))
@@ -205,7 +207,7 @@ impl<P: SocketProtector> UdpRelay<P> {
         };
         let header = if id.source.is_ipv4() { 28 } else { 48 };
         if count + header > self.mtu {
-            self.forget(&id);
+            // Only this datagram is discarded; the peer cannot tear down the flow with one packet.
             return Err(RelayError::MtuExceeded);
         }
         if let Some(policy) = self
@@ -229,7 +231,10 @@ impl<P: SocketProtector> UdpRelay<P> {
                 Ok(())
             })();
             if let Err(error) = checked {
-                self.forget(&id);
+                // A duplicate or late answer is just discarded; other failures revoke the flow.
+                if error != DnsError::Unsolicited {
+                    self.forget(&id);
+                }
                 return Err(RelayError::Dns(error));
             }
         }
@@ -242,6 +247,7 @@ impl<P: SocketProtector> UdpRelay<P> {
         match self.engine.authorize_response(&response, &id, now) {
             Outcome::Accepted { .. } => {
                 self.dns_pending.remove(&id);
+                self.engine.refresh_flow(&id, now);
                 Ok(response)
             }
             Outcome::Dropped(reason) => {

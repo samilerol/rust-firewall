@@ -188,3 +188,15 @@ fn network_reset_keeps_monotonic_clock_and_explicit_omission_policy() {
     .unwrap();
     assert!(accepted(allowed.process(&omitted, 0)));
 }
+#[test]
+fn refresh_extends_an_existing_flow_but_never_creates_one() {
+    let mut e = engine(2);
+    let id = FlowId::from(&parse(&packet(1234)).unwrap());
+    e.refresh_flow(&id, 0);
+    assert_eq!(e.flow_count(), 0, "refresh must not create a flow");
+    assert!(accepted(e.process(&packet(1234), 0)));
+    e.refresh_flow(&id, 9);
+    assert_eq!(e.expire(18), Ok(0));
+    assert!(e.contains_flow(&id));
+    assert_eq!(e.expire(19), Ok(1));
+}

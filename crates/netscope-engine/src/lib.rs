@@ -134,6 +134,13 @@ impl Engine {
     ) -> Result<usize, TrackError> {
         self.flows.expire_with(now, removed)
     }
+    /// Extend an existing flow's idle lease after the caller accepted traffic for it (for
+    /// example an authorized UDP reply). Never creates a flow and never authorizes anything.
+    pub fn refresh_flow(&mut self, id: &FlowId, now: u64) {
+        if self.flows.get(id).is_some() {
+            let _ = self.flows.observe(*id, now);
+        }
+    }
     pub fn flow_count(&self) -> usize {
         self.flows.len()
     }

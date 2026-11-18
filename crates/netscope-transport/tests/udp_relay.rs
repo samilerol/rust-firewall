@@ -257,6 +257,7 @@ fn oversized_reply_is_dropped_instead_of_fragmented_or_truncated() {
         let mut b = [0; 100];
         let (_, peer) = server.recv_from(&mut b).unwrap();
         server.send_to(&[0; 1600], peer).unwrap();
+        server.send_to(b"ok", peer).unwrap();
     });
     let (mut r, _) = relay(1, Action::Allow, false);
     let sent = r.send(&request(endpoint, 1, b"a"), 0).unwrap();
@@ -264,8 +265,36 @@ fn oversized_reply_is_dropped_instead_of_fragmented_or_truncated() {
         receive(&mut r, sent.flow),
         Err(RelayError::MtuExceeded)
     ));
-    assert_eq!(r.flow_count(), 0);
+    // Only the oversized datagram is lost; the flow keeps working.
+    assert_eq!(r.flow_count(), 1);
+    assert_eq!(&receive(&mut r, sent.flow).unwrap()[28..], b"ok");
     worker.join().unwrap();
+}
+#[test]
+fn authorized_replies_extend_the_idle_lease_but_silence_still_expires() {
+    let server = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let endpoint = server.local_addr().unwrap();
+    let (mut r, _) = relay(1, Action::Allow, false); // idle timeout is 10 ticks
+    let sent = r.send(&request(endpoint, 1, b"a"), 0).unwrap();
+    let mut buffer = [0; 20];
+    let (_, peer) = server.recv_from(&mut buffer).unwrap();
+    server.send_to(b"r1", peer).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reply = loop {
+        match r.receive(sent.flow, 9) {
+            Err(RelayError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            other => break other.unwrap(),
+        }
+    };
+    assert_eq!(&reply[28..], b"r1");
+    // Without the reply the flow would have expired at tick 10.
+    assert_eq!(r.expire(18).unwrap(), 0);
+    assert_eq!(r.flow_count(), 1);
+    assert_eq!(r.expire(19).unwrap(), 1);
+    assert_eq!(r.flow_count(), 0);
 }
 
 #[test]
