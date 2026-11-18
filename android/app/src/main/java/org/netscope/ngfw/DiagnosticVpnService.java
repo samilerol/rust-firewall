@@ -154,7 +154,8 @@ public final class DiagnosticVpnService extends VpnService {
         }
 
         private void runForwarding() throws ErrnoException, IOException {
-            long session = NativeCore.startForwarding(DiagnosticVpnService.this);
+            AppBlockRules rules = AppBlockRules.open(DiagnosticVpnService.this);
+            long session = NativeCore.startForwarding(DiagnosticVpnService.this, rules);
             if (session == 0) return;
             TrafficObservations observations = new TrafficObservations(getSystemService(android.net.ConnectivityManager.class));
             try {
@@ -179,7 +180,7 @@ public final class DiagnosticVpnService extends VpnService {
                             if (n <= 0) break;
                             int result = NativeCore.forwardPacket(session, ingress, n, metadata);
                             if (result < 0) break;
-                            if (result > 0) observations.observe(metadata, n, result == 2);
+                            if (result > 0) observations.observe(metadata, n, result);
                         } catch (ErrnoException error) {
                             if (error.errno != OsConstants.EAGAIN && error.errno != OsConstants.EINTR) throw error;
                         }

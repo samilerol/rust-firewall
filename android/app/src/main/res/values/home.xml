@@ -50,12 +50,12 @@
     <string name="traffic_unknown">Unknown app</string>
     <string name="traffic_uid">App UID %1$d</string>
     <string name="traffic_shared_uid">Shared app UID %1$d</string>
-    <string name="traffic_counts">%1$s · %2$d packets · %3$d profile blocks</string>
+    <string name="traffic_counts">%1$s · %2$d packets · %3$d blocked</string>
 
     <item name="traffic_report_action" type="id" />
     <string name="report_title">Traffic report</string>
     <string name="report_empty">No outbound traffic has been observed in this forwarding session.</string>
-    <string name="report_totals">Observed outbound data: %1$s\nPackets: %2$d\nBlocked by the profile: %3$d\nIdentified UIDs: %4$d\nPackets with unknown owner: %5$d</string>
+    <string name="report_totals">Observed outbound data: %1$s\nPackets: %2$d\nBlocked by network profile: %3$d\nBlocked by app rules: %4$d\nIdentified UIDs: %5$d\nPackets with unknown owner: %6$d</string>
     <string name="report_scope">This report covers checked TCP and UDP packets routed to NetScope during this VPN session. It does not cover modem signalling or traffic outside the VPN.</string>
     <string name="voice_title">Voice command</string>
     <string name="voice_listening">Listening…</string>
@@ -109,4 +109,14 @@
     <string name="performance_waiting">Measuring…</string>
     <string name="performance_not_available">Unavailable</string>
     <string name="performance_available">%1$s available of %2$s</string>
+    <item name="app_rules_action" type="id" />
+    <string name="app_rules_title">App rules</string>
+    <string name="app_rules_scope">Select apps to block in the next VPN session. The block applies to all apps sharing an Android UID. When any app rule is enabled, outbound traffic with an unknown owner is blocked too.</string>
+    <string name="app_rules_choose">Choose apps</string>
+    <string name="app_rules_save">Save</string>
+    <string name="app_rules_saved">App rules saved for the next connection.</string>
+    <string name="app_rules_save_error">App rules could not be saved.</string>
+    <string name="app_rules_limit">Select no more than 64 apps.</string>
+    <string name="app_rules_disconnect">Disconnect before editing app rules.</string>
+    <string name="app_rules_old_android">App rules need Android 10 or later.</string>
 </resources>

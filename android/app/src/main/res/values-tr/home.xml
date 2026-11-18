@@ -39,11 +39,11 @@
     <string name="traffic_unknown">Bilinmeyen uygulama</string>
     <string name="traffic_uid">Uygulama UID %1$d</string>
     <string name="traffic_shared_uid">Ortak uygulama UID %1$d</string>
-    <string name="traffic_counts">%1$s · %2$d paket · profilin engellediği %3$d</string>
+    <string name="traffic_counts">%1$s · %2$d paket · engellenen %3$d</string>
 
     <string name="report_title">Trafik raporu</string>
     <string name="report_empty">Bu aktarım oturumunda henüz giden trafik görülmedi.</string>
-    <string name="report_totals">Görülen giden veri: %1$s\nPaket: %2$d\nProfilin engellediği: %3$d\nTanımlanan UID: %4$d\nSahibi bilinmeyen paket: %5$d</string>
+    <string name="report_totals">Görülen giden veri: %1$s\nPaket: %2$d\nAğ profilinin engellediği: %3$d\nUygulama kurallarının engellediği: %4$d\nTanımlanan UID: %5$d\nSahibi bilinmeyen paket: %6$d</string>
     <string name="report_scope">Rapor, bu VPN oturumunda NetScope’a yönlendirilen ve doğrulanan TCP ve UDP paketlerini kapsar. Modem sinyalleşmesi ve VPN dışı trafik bu rapora dahil değildir.</string>
     <string name="voice_title">Sesli komut</string>
     <string name="voice_listening">Dinleniyor…</string>
@@ -90,4 +90,13 @@
     <string name="performance_waiting">Ölçülüyor…</string>
     <string name="performance_not_available">Kullanılamıyor</string>
     <string name="performance_available">%1$s kullanılabilir / %2$s toplam</string>
+    <string name="app_rules_title">Uygulama kuralları</string>
+    <string name="app_rules_scope">Bir sonraki VPN oturumunda engellenecek uygulamaları seç. Engel aynı Android kimliğini paylaşan tüm uygulamalara uygulanır. Bir uygulama kuralı etkinse sahibi belirlenemeyen giden trafik de engellenir.</string>
+    <string name="app_rules_choose">Uygulamaları seç</string>
+    <string name="app_rules_save">Kaydet</string>
+    <string name="app_rules_saved">Kurallar bir sonraki bağlantı için kaydedildi.</string>
+    <string name="app_rules_save_error">Uygulama kuralları kaydedilemedi.</string>
+    <string name="app_rules_limit">En fazla 64 uygulama seç.</string>
+    <string name="app_rules_disconnect">Kuralları düzenlemek için VPN bağlantısını kes.</string>
+    <string name="app_rules_old_android">Uygulama kuralları için Android 10 veya üzeri gerekiyor.</string>
 </resources>

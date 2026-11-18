@@ -1,7 +1,7 @@
 //! Opt-in Android forwarding preview. Java owns the TUN and drives bounded polling.
 use crate::vpn_protector::AndroidVpnProtector;
 use jni::{
-    objects::{JByteArray, JClass, JObject},
+    objects::{GlobalRef, JByteArray, JClass, JObject, JValue},
     sys::{jint, jlong},
     JNIEnv,
 };
@@ -91,6 +91,7 @@ struct Session {
     udp: UdpRelay<Protector>,
     prefer_tcp: bool,
     outbound: Policy,
+    app_policy: Option<GlobalRef>,
 }
 impl Session {
     fn now(&self) -> u64 {
@@ -99,10 +100,7 @@ impl Session {
             .as_millis()
             .min(u128::from(tcp::MAX_TIME_MS)) as u64
     }
-    fn ingress(&mut self, packet: &[u8], metadata: &Packet) -> bool {
-        if self.outbound.decide(metadata).action != Action::Allow {
-            return false;
-        }
+    fn forward_allowed(&mut self, packet: &[u8], metadata: &Packet) {
         let now = self.now();
         match metadata.protocol {
             Protocol::Tcp => {
@@ -112,7 +110,6 @@ impl Session {
                 let _ = self.udp.send(packet, now);
             }
         }
-        true
     }
     fn next(&mut self) -> Result<Option<Vec<u8>>, ()> {
         let now = self.now();
@@ -167,6 +164,7 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_startForwarding(
     mut env: JNIEnv<'_>,
     _: JClass<'_>,
     service: JObject<'_>,
+    app_policy: JObject<'_>,
 ) -> jlong {
     catch_unwind(AssertUnwindSafe(|| {
         let mut registry = SESSION.lock().ok()?;
@@ -176,6 +174,11 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_startForwarding(
         let token = registry.0;
         let next = token.checked_add(1)?;
         let protector = Arc::new(AndroidVpnProtector::new(&mut env, &service).ok()?);
+        let app_policy = if app_policy.is_null() {
+            None
+        } else {
+            Some(env.new_global_ref(&app_policy).ok()?)
+        };
         let udp = UdpRelay::new(
             profile(true),
             netscope_engine::Config {
@@ -211,6 +214,7 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_startForwarding(
                 udp,
                 prefer_tcp: false,
                 outbound: profile(false),
+                app_policy,
             }),
         );
         Some(token)
@@ -223,7 +227,7 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_startForwarding(
 #[allow(unsafe_code)]
 #[no_mangle]
 pub extern "system" fn Java_org_netscope_ngfw_NativeCore_forwardPacket(
-    env: JNIEnv<'_>,
+    mut env: JNIEnv<'_>,
     _: JClass<'_>,
     token: jlong,
     bytes: JByteArray<'_>,
@@ -247,12 +251,31 @@ pub extern "system" fn Java_org_netscope_ngfw_NativeCore_forwardPacket(
         let metadata = checked.packet;
         env.set_byte_array_region(&observed, 0, &observation(&metadata))
             .ok()?;
-        // Report only the fixed profile's decision, never upstream delivery.
-        Some(if session.ingress(packet, &metadata) {
-            1
-        } else {
-            2
-        })
+        if session.outbound.decide(&metadata).action != Action::Allow {
+            return Some(2);
+        }
+        if let Some(policy) = &session.app_policy {
+            let observation_object = observed.as_ref();
+            let allowed = env.call_method(
+                policy.as_obj(),
+                "allows",
+                "([B)Z",
+                &[JValue::Object(observation_object)],
+            );
+            match allowed.and_then(|value| value.z()) {
+                Ok(true) => {}
+                Ok(false) => return Some(3),
+                Err(_) => {
+                    if env.exception_check().unwrap_or(false) {
+                        let _ = env.exception_clear();
+                    }
+                    return Some(3);
+                }
+            }
+        }
+        session.forward_allowed(packet, &metadata);
+        // This is an admission decision, not upstream delivery.
+        Some(1)
     })
 }
 

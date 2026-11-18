@@ -84,6 +84,8 @@ public final class ForwardingSmoke extends Instrumentation {
             requireModemScreen(screen);
             phase = "live CPU and memory performance";
             requirePerformanceScreen(screen);
+            phase = "saved app rule denies a profile-allowed connection";
+            requireAppBlock(screen);
             result.putString("stream", "NETSCOPE_FORWARDING_SMOKE_PASS\n");
             code = Activity.RESULT_OK;
         } catch (Exception | AssertionError error) {
@@ -189,9 +191,9 @@ public final class ForwardingSmoke extends Instrumentation {
             throw new AssertionError("Unexpected voice command mapping");
         }
         TrafficReport report = TrafficReport.summarize(java.util.Arrays.asList(
-            new TrafficObservations.Entry(10001, 100, 4, 2),
-            new TrafficObservations.Entry(-1, 20, 1, 0)));
-        if (!report.equals(new TrafficReport(120, 5, 2, 1, 1))) {
+            new TrafficObservations.Entry(10001, 100, 4, 1, 1),
+            new TrafficObservations.Entry(-1, 20, 1, 0, 0)));
+        if (!report.equals(new TrafficReport(120, 5, 1, 1, 1, 1))) {
             throw new AssertionError("Traffic report totals are incorrect");
         }
     }
@@ -205,7 +207,7 @@ public final class ForwardingSmoke extends Instrumentation {
         long deadline = SystemClock.elapsedRealtime() + 5000;
         while (true) {
             var root = ui.getRootInActiveWindow();
-            if (root != null && !root.findAccessibilityNodeInfosByText("Blocked by the profile:").isEmpty()) {
+            if (root != null && !root.findAccessibilityNodeInfosByText("Blocked by network profile:").isEmpty()) {
                 ui.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK);
                 waitForIdleSync();
                 return;
@@ -213,6 +215,45 @@ public final class ForwardingSmoke extends Instrumentation {
             if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("Live report did not appear");
             SystemClock.sleep(100);
         }
+    }
+
+    private void requireAppBlock(Activity screen) throws IOException {
+        if (!AppBlockRules.save(getTargetContext(), java.util.Collections.singleton(getTargetContext().getPackageName()))) {
+            throw new AssertionError("Could not store app rule");
+        }
+        try {
+            click(screen, R.string.vpn_connect);
+            long deadline = SystemClock.elapsedRealtime() + 10000;
+            while (true) {
+                try (DatagramSocket socket = new DatagramSocket()) {
+                    socket.connect(new InetSocketAddress("10.0.2.2", 53));
+                    if ("10.111.0.1".equals(socket.getLocalAddress().getHostAddress())) break;
+                }
+                if (SystemClock.elapsedRealtime() >= deadline) throw new AssertionError("VPN route did not start");
+                SystemClock.sleep(100);
+            }
+            try (Socket denied = new Socket()) {
+                try {
+                    denied.connect(new InetSocketAddress("10.0.2.2", 80), 1500);
+                    throw new AssertionError("App rule allowed a connection to port 80");
+                } catch (SocketTimeoutException expected) {
+                    // This port was reachable through the previous unblocked VPN session.
+                }
+            }
+            int uid = android.os.Process.myUid();
+            if (DiagnosticVpnService.trafficSnapshot().stream().noneMatch(
+                item -> item.uid() == uid && item.appBlocks() > 0)) {
+                throw new AssertionError("The blocked app was not identified in the counters");
+            }
+            click(screen, R.string.vpn_disconnect);
+            awaitEcho(8080, null);
+        } finally {
+            AppBlockRules.save(getTargetContext(), java.util.Collections.emptySet());
+        }
+        click(screen, R.string.vpn_connect);
+        awaitEcho(80, "10.111.0.1");
+        click(screen, R.string.vpn_disconnect);
+        awaitEcho(8080, null);
     }
 
     private void requirePerformanceScreen(Activity screen) {

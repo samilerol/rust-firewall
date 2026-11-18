@@ -20,14 +20,17 @@ final class TrafficObservations {
     private static final int CACHE_LIMIT = 256;
     private static final int LOOKUPS_PER_SECOND = 64;
 
-    record Entry(int uid, long bytes, long packets, long blocked) {}
+    record Entry(int uid, long bytes, long packets, long profileBlocks, long appBlocks) {
+        long blocked() { return profileBlocks + appBlocks; }
+    }
     private record Tuple(int header, int ports, long sourceHigh, long sourceLow,
                          long destinationHigh, long destinationLow) {}
     private record Owner(int uid, long expires) {}
     private static final class Counts {
         long bytes;
         long packets;
-        long blocked;
+        long profileBlocks;
+        long appBlocks;
     }
 
     private final ConnectivityManager connectivity;
@@ -41,8 +44,8 @@ final class TrafficObservations {
         this.connectivity = connectivity;
     }
 
-    void observe(byte[] metadata, int length, boolean blocked) {
-        record(resolve(metadata), length, blocked);
+    void observe(byte[] metadata, int length, int decision) {
+        record(resolve(metadata), length, decision);
     }
 
     private int resolve(byte[] bytes) {
@@ -61,34 +64,40 @@ final class TrafficObservations {
         if (lookups >= LOOKUPS_PER_SECOND) return UNKNOWN_UID;
         lookups++;
 
-        int uid = UNKNOWN_UID;
-        try {
-            int addressLength = bytes[1];
-            InetAddress source = InetAddress.getByAddress(Arrays.copyOfRange(bytes, 6, 6 + addressLength));
-            InetAddress destination = InetAddress.getByAddress(Arrays.copyOfRange(bytes, 22, 22 + addressLength));
-            uid = connectivity.getConnectionOwnerUid(bytes[0],
-                new InetSocketAddress(source, Short.toUnsignedInt(buffer.getShort(2))),
-                new InetSocketAddress(destination, Short.toUnsignedInt(buffer.getShort(4))));
-        } catch (UnknownHostException | RuntimeException ignored) {
-            // Device support, disappeared sockets and revoked VPNs all use the unknown bucket.
-        }
+        int uid = lookupOwner(connectivity, bytes);
         owners.remove(key);
         if (owners.size() == CACHE_LIMIT) owners.remove(owners.keySet().iterator().next());
         owners.put(key, new Owner(uid, now + (uid < 0 ? 100 : 1000)));
         return uid;
     }
 
-    synchronized void record(int uid, int length, boolean blocked) {
+    static int lookupOwner(ConnectivityManager connectivity, byte[] bytes) {
+        if (Build.VERSION.SDK_INT < 29 || connectivity == null) return UNKNOWN_UID;
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        try {
+            int addressLength = bytes[1];
+            InetAddress source = InetAddress.getByAddress(Arrays.copyOfRange(bytes, 6, 6 + addressLength));
+            InetAddress destination = InetAddress.getByAddress(Arrays.copyOfRange(bytes, 22, 22 + addressLength));
+            return connectivity.getConnectionOwnerUid(bytes[0],
+                new InetSocketAddress(source, Short.toUnsignedInt(buffer.getShort(2))),
+                new InetSocketAddress(destination, Short.toUnsignedInt(buffer.getShort(4))));
+        } catch (UnknownHostException | RuntimeException ignored) {
+            return UNKNOWN_UID;
+        }
+    }
+
+    synchronized void record(int uid, int length, int decision) {
         if (uid < 0 || (!counts.containsKey(uid) && counts.size() >= MAX_OWNERS)) uid = UNKNOWN_UID;
         Counts value = counts.computeIfAbsent(uid, ignored -> new Counts());
         value.bytes += length;
         value.packets++;
-        if (blocked) value.blocked++;
+        if (decision == 2) value.profileBlocks++;
+        if (decision == 3) value.appBlocks++;
     }
 
     synchronized List<Entry> snapshot() {
         List<Entry> snapshot = new ArrayList<>(counts.size());
-        counts.forEach((uid, value) -> snapshot.add(new Entry(uid, value.bytes, value.packets, value.blocked)));
+        counts.forEach((uid, value) -> snapshot.add(new Entry(uid, value.bytes, value.packets, value.profileBlocks, value.appBlocks)));
         return snapshot;
     }
 }

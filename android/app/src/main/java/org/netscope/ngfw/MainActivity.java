@@ -74,6 +74,12 @@ public final class MainActivity extends Activity {
         styleButton(apps, SURFACE, TEXT, BORDER);
         apps.setOnClickListener(view -> startActivity(new Intent(this, TrafficActivity.class)));
         add(body, apps, 12);
+        Button rules = button();
+        rules.setText(R.string.app_rules_title);
+        rules.setId(R.id.app_rules_action);
+        styleButton(rules, SURFACE, TEXT, BORDER);
+        rules.setOnClickListener(view -> showAppRules());
+        add(body, rules, 8);
         addTools(body);
         addProfile(body);
         setContentView(scroll);
@@ -90,6 +96,67 @@ public final class MainActivity extends Activity {
         try { nativeReady = NativeCore.inspect(new byte[0], 0) == -1; }
         catch (LinkageError error) { nativeReady = false; }
         showStatus();
+    }
+
+    private boolean canEditAppRules() {
+        var status = DiagnosticVpnService.status();
+        return status == DiagnosticVpnService.Status.IDLE || status == DiagnosticVpnService.Status.FAILED;
+    }
+
+    private void showAppRules() {
+        if (Build.VERSION.SDK_INT < 29) {
+            showNotice(R.string.app_rules_old_android);
+            return;
+        }
+        if (!canEditAppRules()) {
+            showNotice(R.string.app_rules_disconnect);
+            return;
+        }
+        java.util.Set<String> selected = AppBlockRules.saved(this);
+        java.util.Map<String, String> labels = new java.util.HashMap<>();
+        for (var app : getPackageManager().queryIntentActivities(
+            new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)) {
+            String name = app.activityInfo.packageName;
+            labels.put(name, app.loadLabel(getPackageManager()) + "  ·  " + name);
+        }
+        for (String name : selected) labels.putIfAbsent(name, name);
+        var packages = new java.util.ArrayList<>(labels.keySet());
+        packages.sort(java.util.Comparator.comparing(labels::get, String.CASE_INSENSITIVE_ORDER));
+        String[] display = new String[packages.size()];
+        boolean[] checked = new boolean[packages.size()];
+        for (int i = 0; i < packages.size(); i++) {
+            display[i] = labels.get(packages.get(i));
+            checked[i] = selected.contains(packages.get(i));
+        }
+        AlertDialog editor = new AlertDialog.Builder(this)
+            .setTitle(R.string.app_rules_title)
+            .setMultiChoiceItems(display, checked, (dialog, choice, blocked) -> {
+                if (blocked) selected.add(packages.get(choice));
+                else selected.remove(packages.get(choice));
+            })
+            .setPositiveButton(R.string.app_rules_save, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create();
+        editor.setOnShowListener(dialog -> editor.getButton(AlertDialog.BUTTON_POSITIVE)
+            .setOnClickListener(view -> {
+                if (!canEditAppRules()) {
+                    showNotice(R.string.app_rules_disconnect);
+                } else if (selected.size() > AppBlockRules.MAX_PACKAGES) {
+                    showNotice(R.string.app_rules_limit);
+                } else if (AppBlockRules.save(this, selected)) {
+                    editor.dismiss();
+                    showNotice(R.string.app_rules_saved);
+                } else {
+                    showNotice(R.string.app_rules_save_error);
+                }
+            }));
+        new AlertDialog.Builder(this).setTitle(R.string.app_rules_title)
+            .setMessage(R.string.app_rules_scope)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.app_rules_choose, (dialog, choice) -> {
+                if (canEditAppRules()) editor.show();
+                else showNotice(R.string.app_rules_disconnect);
+            }).show();
     }
 
     private void addTools(LinearLayout body) {
@@ -116,7 +183,7 @@ public final class MainActivity extends Activity {
         String summary = report.packets() == 0 ? getString(R.string.report_empty)
             : getString(R.string.report_totals,
                 android.text.format.Formatter.formatShortFileSize(this, report.bytes()),
-                report.packets(), report.blocked(), report.knownOwners(), report.unknownPackets());
+                report.packets(), report.profileBlocks(), report.appBlocks(), report.knownOwners(), report.unknownPackets());
         new AlertDialog.Builder(this).setTitle(R.string.report_title)
             .setMessage(summary + "\n\n" + getString(R.string.report_scope))
             .setPositiveButton(android.R.string.ok, null).show();
@@ -136,7 +203,7 @@ public final class MainActivity extends Activity {
     private void requestVoice() {
         if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_MICROPHONE)
             || !OnDeviceVoice.available(this)) {
-            voiceNotice(R.string.voice_unavailable);
+            showNotice(R.string.voice_unavailable);
         } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, MICROPHONE);
         } else {
@@ -153,11 +220,11 @@ public final class MainActivity extends Activity {
                 handleVoice(command);
             }, () -> {
                 resetVoiceButton();
-                voiceNotice(R.string.voice_failure);
+                showNotice(R.string.voice_failure);
             });
         if (!started) {
             resetVoiceButton();
-            voiceNotice(R.string.voice_unavailable);
+            showNotice(R.string.voice_unavailable);
         }
     }
 
@@ -166,7 +233,7 @@ public final class MainActivity extends Activity {
         voiceAction.setEnabled(true);
     }
 
-    private void voiceNotice(int message) {
+    private void showNotice(int message) {
         android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show();
     }
 
@@ -182,7 +249,7 @@ public final class MainActivity extends Activity {
                 if (!action.isEnabled() || connecting == vpnActive()
                     || current == DiagnosticVpnService.Status.STARTING
                     || current == DiagnosticVpnService.Status.STOPPING) {
-                    voiceNotice(R.string.voice_no_change);
+                    showNotice(R.string.voice_no_change);
                     return;
                 }
                 int title = connecting ? R.string.vpn_connect : R.string.vpn_disconnect;
@@ -194,7 +261,7 @@ public final class MainActivity extends Activity {
                         else disconnect();
                     }).show();
             }
-            case UNKNOWN -> voiceNotice(R.string.voice_help);
+            case UNKNOWN -> showNotice(R.string.voice_help);
         }
     }
 
@@ -369,7 +436,7 @@ public final class MainActivity extends Activity {
         super.onRequestPermissionsResult(request, permissions, results);
         if (request == MICROPHONE) {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) listen();
-            else voiceNotice(R.string.voice_permission);
+            else showNotice(R.string.voice_permission);
             return;
         }
         if (request != NOTIFICATIONS) return;
