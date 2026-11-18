@@ -95,6 +95,12 @@ fn receive_at(r: &mut UdpRelay<Protector>, flow: FlowId, now: u64) -> Result<Vec
         }
     }
 }
+/// IPv6 loopback may be missing in containers. CI sets NETSCOPE_REQUIRE_IPV6 so a missing
+/// loopback there fails the test instead of silently skipping it.
+fn ipv6_loopback_available() -> bool {
+    std::env::var_os("NETSCOPE_REQUIRE_IPV6").is_some()
+        || std::net::UdpSocket::bind("[::1]:0").is_ok()
+}
 #[test]
 fn blocked_and_malformed_dns_are_not_sent_or_allocated() {
     let s = server("127.0.0.1:0");
@@ -124,6 +130,10 @@ fn blocked_and_malformed_dns_are_not_sent_or_allocated() {
 }
 #[test]
 fn ipv4_and_ipv6_dns_round_trip_consumes_exact_pending_question() {
+    if !ipv6_loopback_available() {
+        eprintln!("skipped: no IPv6 loopback in this environment (set NETSCOPE_REQUIRE_IPV6=1 to fail instead)");
+        return;
+    }
     for address in ["127.0.0.1:0", "[::1]:0"] {
         let s = server(address);
         let endpoint = s.local_addr().unwrap();
@@ -267,6 +277,10 @@ fn a_second_unsolicited_answer_cannot_reuse_consumed_transaction() {
 
 #[test]
 fn concurrent_ipv4_ipv6_queries_share_socket_and_complete_out_of_order() {
+    if !ipv6_loopback_available() {
+        eprintln!("skipped: no IPv6 loopback in this environment (set NETSCOPE_REQUIRE_IPV6=1 to fail instead)");
+        return;
+    }
     for address in ["127.0.0.1:0", "[::1]:0"] {
         let s = server(address);
         let endpoint = s.local_addr().unwrap();

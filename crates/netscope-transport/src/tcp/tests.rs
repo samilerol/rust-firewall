@@ -250,6 +250,12 @@ fn echo(address: &str, payload: Vec<u8>, drop_synack: bool, drive: Drive) {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     worker.join().unwrap();
 }
+/// IPv6 loopback may be missing in containers. CI sets NETSCOPE_REQUIRE_IPV6 so a missing
+/// loopback there fails the test instead of silently skipping it.
+pub(super) fn ipv6_loopback_available() -> bool {
+    std::env::var_os("NETSCOPE_REQUIRE_IPV6").is_some()
+        || std::net::UdpSocket::bind("[::1]:0").is_ok()
+}
 #[test]
 fn ipv4_tcp_echo_half_close_and_partial_buffering() {
     echo(
@@ -279,6 +285,10 @@ fn ipv4_tcp_echo_driven_by_a_real_poll_wait() {
 }
 #[test]
 fn ipv6_tcp_echo_half_close() {
+    if !ipv6_loopback_available() {
+        eprintln!("skipped: no IPv6 loopback in this environment (set NETSCOPE_REQUIRE_IPV6=1 to fail instead)");
+        return;
+    }
     echo(
         "[::1]:0",
         b"IPv6 real TCP echo".repeat(100),

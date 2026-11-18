@@ -90,6 +90,12 @@ fn receive(
         }
     }
 }
+/// IPv6 loopback may be missing in containers. CI sets NETSCOPE_REQUIRE_IPV6 so a missing
+/// loopback there fails the test instead of silently skipping it.
+fn ipv6_loopback_available() -> bool {
+    std::env::var_os("NETSCOPE_REQUIRE_IPV6").is_some()
+        || std::net::UdpSocket::bind("[::1]:0").is_ok()
+}
 #[test]
 fn ipv4_real_udp_echo_becomes_a_checked_reverse_ip_datagram() {
     let (endpoint, server) = echo("127.0.0.1:0");
@@ -110,6 +116,10 @@ fn ipv4_real_udp_echo_becomes_a_checked_reverse_ip_datagram() {
 }
 #[test]
 fn ipv6_real_udp_echo_becomes_a_checked_reverse_ip_datagram() {
+    if !ipv6_loopback_available() {
+        eprintln!("skipped: no IPv6 loopback in this environment (set NETSCOPE_REQUIRE_IPV6=1 to fail instead)");
+        return;
+    }
     let (endpoint, server) = echo("[::1]:0");
     let (mut r, _) = relay(1, Action::Allow, false);
     let sent = r.send(&request(endpoint, 1234, b"v6"), 0).unwrap();

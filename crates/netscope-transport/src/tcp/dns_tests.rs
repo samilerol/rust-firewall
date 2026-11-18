@@ -191,6 +191,10 @@ impl Harness {
 }
 #[test]
 fn ipv4_ipv6_fragmented_pipeline_out_of_order_and_large_frames() {
+    if !super::tests::ipv6_loopback_available() {
+        eprintln!("skipped: no IPv6 loopback in this environment (set NETSCOPE_REQUIRE_IPV6=1 to fail instead)");
+        return;
+    }
     for address in ["127.0.0.1:0", "[::1]:0"] {
         let mut h = Harness::new(address);
         let a = query("safe.example", 1, 4096);

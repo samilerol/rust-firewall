@@ -24,13 +24,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check   # use `cargo fmt` to apply
 ```
 
-Some IPv6 loopback tests fail in environments without IPv6; report that, do not hide it.
+IPv6 loopback tests skip themselves (with a message) when the environment has no IPv6 loopback; CI sets `NETSCOPE_REQUIRE_IPV6=1` so a missing loopback there fails instead of skipping. Report skips, do not hide them.
 
 ## Working rules
 
 - Think before coding: state assumptions, name unclear points, ask when uncertain, and present alternatives instead of silently choosing one.
 - Keep it simple: write the minimum that solves the request; no speculative features or abstractions.
 - Make only the requested change; do not refactor or reformat unrelated code. Mention unrelated problems instead of fixing them.
+- Before starting any work, `git fetch` and check open pull requests and `feat/*` branches for overlapping work (another agent or person may be changing the same area); build on the latest integration branch, keep branches short-lived and PRs small (about 400 lines), and never reimplement something an open PR already contains.
 - Define the success criterion first (a failing test, a command that must pass) and verify it before claiming completion.
 
 ## Project-specific rules
