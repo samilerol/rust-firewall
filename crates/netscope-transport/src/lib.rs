@@ -8,6 +8,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
+    time::Duration,
 };
 
 pub const MAX_UDP_FLOWS: usize = 1024;
@@ -255,6 +256,40 @@ impl<P: SocketProtector> UdpRelay<P> {
                 Err(RelayError::Dropped(reason))
             }
         }
+    }
+    /// Block up to `max_wait` until an upstream socket has a datagram to `receive`, or until the
+    /// oldest flow's idle deadline (so expired sockets are released on time), then return the
+    /// ready flows. Call `receive` on each until it reports `WouldBlock`. `now` and the engine
+    /// timeout are interpreted as milliseconds here. An empty list means timeout or a signal.
+    /// Uses level-triggered `poll(2)` through a safe wrapper: cost is linear in open flows.
+    #[cfg(unix)]
+    pub fn wait_ready(&mut self, now: u64, max_wait: Duration) -> Result<Vec<FlowId>, RelayError> {
+        use rustix::event::{poll, PollFd, PollFlags, Timespec};
+        self.expire(now)?;
+        let wait = self.engine.next_expiry().map_or(max_wait, |due| {
+            max_wait.min(Duration::from_millis(due.saturating_sub(now)))
+        });
+        let mut ids = Vec::with_capacity(self.sockets.len());
+        let mut fds = Vec::with_capacity(self.sockets.len());
+        for (id, socket) in &self.sockets {
+            ids.push(*id);
+            fds.push(PollFd::new(socket, PollFlags::IN));
+        }
+        let timeout = Timespec {
+            tv_sec: wait.as_secs().min(i64::MAX as u64) as i64,
+            tv_nsec: i64::from(wait.subsec_nanos()),
+        };
+        match poll(&mut fds, Some(&timeout)) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => return Ok(Vec::new()),
+            Err(error) => return Err(RelayError::Io(error.into())),
+        }
+        Ok(fds
+            .iter()
+            .zip(ids)
+            .filter(|(fd, _)| !fd.revents().is_empty())
+            .map(|(_, id)| id)
+            .collect())
     }
     /// A valid policy update closes ALL existing UDP sockets/observations; invalid input changes nothing.
     pub fn update_policy(&mut self, rules: Vec<Rule>, default: Action) -> Result<(), PolicyError> {

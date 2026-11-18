@@ -349,3 +349,83 @@ fn relay_configuration_and_zero_capacity_do_not_allocate_sockets() {
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+#[cfg(unix)]
+#[test]
+fn wait_ready_reports_only_flows_with_a_datagram_and_honors_deadlines() {
+    let quiet = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let talkative = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (mut r, _) = {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            UdpRelay::new(
+                Policy::new(vec![], Action::Allow).unwrap(),
+                Config {
+                    max_flows: 2,
+                    timeout: 400, // milliseconds for wait_ready
+                    checksums: ChecksumPolicy::Require,
+                },
+                1500,
+                Protector {
+                    calls: calls.clone(),
+                    fail: false,
+                },
+            )
+            .unwrap(),
+            calls,
+        )
+    };
+    let quiet_flow = r
+        .send(&request(quiet.local_addr().unwrap(), 1, b"q"), 0)
+        .unwrap()
+        .flow;
+    let talk_flow = r
+        .send(&request(talkative.local_addr().unwrap(), 2, b"t"), 0)
+        .unwrap()
+        .flow;
+    // No datagram yet: the wait runs to the caller's cap.
+    let started = Instant::now();
+    assert!(r
+        .wait_ready(1, Duration::from_millis(60))
+        .unwrap()
+        .is_empty());
+    assert!(started.elapsed() >= Duration::from_millis(50));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // One server replies while we wait: only that flow is reported, long before the cap.
+    let mut buffer = [0; 16];
+    let (_, peer) = talkative.recv_from(&mut buffer).unwrap();
+    let replier = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        talkative.send_to(b"pong", peer).unwrap();
+    });
+    let started = Instant::now();
+    let ready = r.wait_ready(1, Duration::from_secs(5)).unwrap();
+    assert_eq!(ready, vec![talk_flow]);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    replier.join().unwrap();
+    assert_eq!(&r.receive(talk_flow, 1).unwrap()[28..], b"pong");
+    assert!(matches!(
+        r.receive(quiet_flow, 1),
+        Err(RelayError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock
+    ));
+    // The oldest flow's idle deadline bounds the wait, and the expired sockets are released.
+    let started = Instant::now();
+    assert!(r
+        .wait_ready(300, Duration::from_secs(60))
+        .unwrap()
+        .is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "ignored idle deadline"
+    );
+    // The silent flow expires at 400; the one that got a reply at 1 is refreshed to 401.
+    assert!(r
+        .wait_ready(400, Duration::from_millis(1))
+        .unwrap()
+        .is_empty());
+    assert_eq!(r.flow_count(), 1);
+    assert!(r
+        .wait_ready(401, Duration::from_millis(1))
+        .unwrap()
+        .is_empty());
+    assert_eq!(r.flow_count(), 0);
+}
