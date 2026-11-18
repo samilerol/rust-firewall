@@ -175,6 +175,15 @@ impl Flow {
         self.failed = true;
         self.stack_poll(now);
     }
+    /// Abortive close of a flow the relay is discarding: returns the RST the client needs,
+    /// or None when the stack socket is not an active connection (nothing to reset).
+    fn reset_packet(&mut self, now: u64) -> Option<Vec<u8>> {
+        if !self.sockets.get::<StackSocket>(self.handle).is_active() {
+            return None;
+        }
+        self.abort(now);
+        self.device.tx.pop_front()
+    }
     fn pump(&mut self) -> io::Result<()> {
         let Some(upstream) = self.upstream.as_mut() else {
             return Ok(());
@@ -256,11 +265,24 @@ fn pending_connect(error: &io::Error) -> bool {
     }
     false
 }
+/// Queue a RST for a discarded flow. At most `limit` are held; overflow is dropped and that
+/// client falls back to its own timeout.
+fn queue_reset(resets: &mut VecDeque<Vec<u8>>, limit: usize, packet: Option<Vec<u8>>) {
+    if let Some(packet) = packet {
+        if resets.len() < limit {
+            resets.push_back(packet);
+        }
+    }
+}
 pub struct TcpRelay<P> {
     config: Config,
     engine: Engine,
     flows: HashMap<FlowId, Flow>,
     round_robin: VecDeque<FlowId>,
+    /// RSTs synthesized for flows discarded without a normal close; drained by `next_packet`.
+    resets: VecDeque<Vec<u8>>,
+    /// Last accepted clock value, for teardown paths that take no `now`.
+    clock: u64,
     protector: P,
 }
 impl<P: TcpSocketProtector> TcpRelay<P> {
@@ -297,26 +319,86 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             engine,
             flows: HashMap::new(),
             round_robin: VecDeque::new(),
+            resets: VecDeque::new(),
+            clock: 0,
             protector,
         })
+    }
+    fn reset_limit(&self) -> usize {
+        self.config.max_flows * 2
     }
     fn maintain(&mut self, now: u64) -> Result<(), Error> {
         if now > MAX_TIME_MS {
             return Err(Error::Clock);
         }
         let flows = &mut self.flows;
+        let resets = &mut self.resets;
+        let limit = self.config.max_flows * 2;
         self.engine
             .expire_with(now, |id| {
-                flows.remove(&id);
+                if let Some(mut flow) = flows.remove(&id) {
+                    queue_reset(resets, limit, flow.reset_packet(now));
+                }
             })
             .map_err(|_| Error::Clock)?;
+        self.clock = now;
         self.round_robin.retain(|id| self.flows.contains_key(id));
         Ok(())
     }
+    /// Drop a flow; an active client connection receives a RST instead of silence.
     fn forget(&mut self, id: &FlowId) {
-        self.flows.remove(id);
+        if let Some(mut flow) = self.flows.remove(id) {
+            let packet = flow.reset_packet(self.clock);
+            queue_reset(&mut self.resets, self.config.max_flows * 2, packet);
+        }
         self.engine.forget_flow(id);
         self.round_robin.retain(|v| v != id);
+    }
+    /// Open the protected upstream stream; returns it and whether the connect is still pending.
+    fn connect_upstream(&self, id: FlowId) -> Result<(TcpStream, bool), Error> {
+        let socket = Socket::new(
+            if id.source.is_ipv4() {
+                Domain::IPV4
+            } else {
+                Domain::IPV6
+            },
+            Type::STREAM,
+            Some(OsProtocol::TCP),
+        )?;
+        socket.set_nonblocking(true)?;
+        socket.set_tcp_nodelay(true)?;
+        socket.set_recv_buffer_size(self.config.buffer_bytes)?;
+        socket.set_send_buffer_size(self.config.buffer_bytes)?;
+        self.protector.protect(&socket)?;
+        let connecting =
+            match socket.connect(&SocketAddr::new(id.destination, id.destination_port).into()) {
+                Ok(()) => false,
+                Err(error) if pending_connect(&error) => true,
+                Err(error) => return Err(Error::Io(error)),
+            };
+        Ok((socket.into(), connecting))
+    }
+    /// Feed the initial SYN to a new stack flow and connect upstream. If the upstream cannot be
+    /// opened, the client's SYN is answered with a RST instead of being left to time out.
+    fn open_flow(&mut self, id: FlowId, bytes: &[u8], now: u64) -> Result<Flow, Error> {
+        let mut flow = Flow::new(id, self.config, now)?;
+        flow.device.rx = Some(bytes.to_vec());
+        flow.stack_poll(now);
+        if flow.sockets.get::<StackSocket>(flow.handle).state() != State::SynReceived {
+            return Err(Error::Stack);
+        }
+        match self.connect_upstream(id) {
+            Ok((stream, connecting)) => {
+                flow.upstream = Some(stream);
+                flow.connecting = connecting;
+                Ok(flow)
+            }
+            Err(error) => {
+                let limit = self.reset_limit();
+                queue_reset(&mut self.resets, limit, flow.reset_packet(now));
+                Err(error)
+            }
+        }
     }
     /// Feed a complete checksummed IP/TCP datagram. A new flow must start with a payload-free SYN.
     pub fn ingest(&mut self, bytes: &[u8], now: u64) -> Result<FlowId, Error> {
@@ -360,39 +442,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             Outcome::Accepted { .. } => {}
         }
         if !self.flows.contains_key(&id) {
-            let opened = (|| -> Result<Flow, Error> {
-                let mut flow = Flow::new(id, self.config, now)?;
-                flow.device.rx = Some(bytes.to_vec());
-                flow.stack_poll(now);
-                if flow.sockets.get::<StackSocket>(flow.handle).state() != State::SynReceived {
-                    return Err(Error::Stack);
-                }
-                let socket = Socket::new(
-                    if packet.source.is_ipv4() {
-                        Domain::IPV4
-                    } else {
-                        Domain::IPV6
-                    },
-                    Type::STREAM,
-                    Some(OsProtocol::TCP),
-                )?;
-                socket.set_nonblocking(true)?;
-                socket.set_tcp_nodelay(true)?;
-                socket.set_recv_buffer_size(self.config.buffer_bytes)?;
-                socket.set_send_buffer_size(self.config.buffer_bytes)?;
-                self.protector.protect(&socket)?;
-                let connecting = match socket
-                    .connect(&SocketAddr::new(packet.destination, packet.destination_port).into())
-                {
-                    Ok(()) => false,
-                    Err(error) if pending_connect(&error) => true,
-                    Err(error) => return Err(Error::Io(error)),
-                };
-                flow.upstream = Some(socket.into());
-                flow.connecting = connecting;
-                Ok(flow)
-            })();
-            match opened {
+            match self.open_flow(id, bytes, now) {
                 Ok(flow) => {
                     self.flows.insert(id, flow);
                     self.round_robin.push_back(id);
@@ -445,6 +495,9 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     /// Drain round-robin output; every packet must pass current inbound policy and reverse-flow association.
     pub fn next_packet(&mut self, now: u64) -> Result<Option<Vec<u8>>, Error> {
         self.maintain(now)?;
+        if let Some(reset) = self.resets.pop_front() {
+            return Ok(Some(reset));
+        }
         for _ in 0..self.round_robin.len() {
             let Some(id) = self.round_robin.pop_front() else {
                 break;
@@ -472,7 +525,10 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         Ok(())
     }
     pub fn reset_network(&mut self) {
-        self.flows.clear();
+        let limit = self.reset_limit();
+        for (_, mut flow) in self.flows.drain() {
+            queue_reset(&mut self.resets, limit, flow.reset_packet(self.clock));
+        }
         self.round_robin.clear();
         self.engine.reset_network();
     }

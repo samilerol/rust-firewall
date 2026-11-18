@@ -396,6 +396,10 @@ fn real_flow_capacity_and_policy_reset_revoke_queued_packets() {
     assert_eq!(r.flow_count(), 1);
     r.update_policy(vec![], Action::Deny).unwrap();
     assert_eq!(r.flow_count(), 0);
+    // The queued SYN-ACK is revoked; the client is told with a RST instead.
+    let revoked = r.next_packet(0).unwrap().expect("RST for revoked flow");
+    let tcp = TcpPacket::new_checked(&revoked[20..]).unwrap();
+    assert!(tcp.rst() && !tcp.syn());
     assert!(r.next_packet(0).unwrap().is_none());
     r.update_policy(vec![], Action::Allow).unwrap();
     let mut third = Client::with_port(endpoint, 12347);
@@ -666,4 +670,103 @@ fn nonunicast_source_and_reserved_tcp_bits_do_not_open_sockets() {
         listener.accept().unwrap_err().kind(),
         io::ErrorKind::WouldBlock
     );
+}
+fn client_state(client: &Client) -> State {
+    client.sockets.get::<StackSocket>(client.handle).state()
+}
+/// Hand every relay output packet to the client stack; returns how many were delivered.
+fn deliver(client: &mut Client, r: &mut TcpRelay<Protector>, now: u64) -> usize {
+    let mut delivered = 0;
+    while let Some(bytes) = r.next_packet(now).unwrap() {
+        client.device.rx = Some(bytes);
+        client.poll(now);
+        delivered += 1;
+    }
+    delivered
+}
+fn established(listener: &TcpListener) -> (Client, TcpRelay<Protector>) {
+    let mut client = Client::new(listener.local_addr().unwrap());
+    let (mut r, _) = relay(Action::Allow, false);
+    for now in 0..4 {
+        client.step(&mut r, now);
+    }
+    assert_eq!(client_state(&client), State::Established);
+    (client, r)
+}
+#[test]
+fn network_reset_and_policy_update_reset_established_clients() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (mut client, mut r) = established(&listener);
+    r.reset_network();
+    assert_eq!(r.flow_count(), 0);
+    assert_eq!(deliver(&mut client, &mut r, 4), 1);
+    assert_eq!(client_state(&client), State::Closed);
+
+    let (mut client, mut r) = established(&listener);
+    r.update_policy(vec![], Action::Deny).unwrap();
+    assert_eq!(deliver(&mut client, &mut r, 4), 1);
+    assert_eq!(client_state(&client), State::Closed);
+}
+#[test]
+fn idle_expiry_resets_established_clients() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (mut client, mut r) = established(&listener);
+    r.poll(40_000).unwrap();
+    assert_eq!(r.flow_count(), 0);
+    assert_eq!(deliver(&mut client, &mut r, 40_000), 1);
+    assert_eq!(client_state(&client), State::Closed);
+}
+#[test]
+fn failed_upstream_setup_answers_the_syn_with_a_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = Client::new(listener.local_addr().unwrap());
+    let (mut r, _) = relay(Action::Allow, true); // protect() refuses, so no upstream exists
+    assert!(matches!(r.ingest(&client.syn(), 0), Err(Error::Io(_))));
+    assert_eq!(r.flow_count(), 0);
+    assert_eq!(deliver(&mut client, &mut r, 0), 1);
+    assert_eq!(client_state(&client), State::Closed);
+}
+#[test]
+fn policy_denied_response_resets_the_client_after_the_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = Client::new(listener.local_addr().unwrap());
+    let outbound = Rule {
+        priority: 0,
+        action: Action::Allow,
+        source: None,
+        destination: None,
+        protocol: None,
+        source_port: Some(12345..=12345),
+        destination_port: None,
+    };
+    let mut r = TcpRelay::new(
+        Policy::new(vec![outbound], Action::Deny).unwrap(),
+        config(),
+        Protector {
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail: false,
+        },
+    )
+    .unwrap();
+    r.ingest(&client.syn(), 0).unwrap();
+    assert!(matches!(
+        r.next_packet(0),
+        Err(Error::Dropped(DropReason::Policy { .. }))
+    ));
+    let reset = r.next_packet(0).unwrap().expect("RST after denied reply");
+    assert!(TcpPacket::new_checked(&reset[20..]).unwrap().rst());
+}
+#[test]
+fn queued_resets_are_bounded() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (_, mut r) = established(&listener);
+    let limit = r.reset_limit();
+    for _ in 0..3 {
+        queue_reset(&mut r.resets, limit, Some(vec![0; 40]));
+    }
+    assert_eq!(r.resets.len(), limit.min(3));
+    for _ in 0..limit * 2 {
+        queue_reset(&mut r.resets, limit, Some(vec![0; 40]));
+    }
+    assert_eq!(r.resets.len(), limit);
 }
