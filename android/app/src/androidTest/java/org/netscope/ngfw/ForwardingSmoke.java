@@ -56,6 +56,8 @@ public final class ForwardingSmoke extends Instrumentation {
             requireDnsUdp("1.1.1.1", true);
             phase = "allowed TCP DNS through TUN";
             requireDnsTcp();
+            phase = "upstream-refused TCP connect is reported as refused";
+            requireRefusedTcp();
             phase = "denied alternate DNS endpoint";
             try {
                 requireDnsUdp("10.0.2.2", true);
@@ -156,6 +158,25 @@ public final class ForwardingSmoke extends Instrumentation {
                 return;
             }
             throw new AssertionError("VPN allowed the denied TCP port to connect");
+        }
+    }
+
+    /** The profile allows TCP 443; the fixture refuses it upstream, so the app must see a refusal. */
+    private static void requireRefusedTcp() throws IOException {
+        long started = SystemClock.elapsedRealtime();
+        try (Socket socket = new Socket()) {
+            try {
+                socket.connect(new InetSocketAddress("10.0.2.2", 443), 4000);
+            } catch (java.net.ConnectException expected) {
+                requireVpnSource(socket);
+                if (SystemClock.elapsedRealtime() - started > 3500) {
+                    throw new AssertionError("Refusal arrived only after " + (SystemClock.elapsedRealtime() - started) + " ms");
+                }
+                return;
+            } catch (SocketTimeoutException timeout) {
+                throw new AssertionError("Refused upstream connect hung until the timeout");
+            }
+            throw new AssertionError("VPN reported a connection the upstream refused as established");
         }
     }
 

@@ -1,4 +1,5 @@
 """Loopback endpoints for the Android emulator's deterministic forwarding test."""
+import socket
 import socketserver
 import threading
 
@@ -30,6 +31,13 @@ class DnsTcp(socketserver.StreamRequestHandler):
         if int.from_bytes(size, "big") == len(QUERY) and self.rfile.read(len(QUERY)) == QUERY:
             self.wfile.write(len(ANSWER).to_bytes(2, "big") + ANSWER)
 
+
+# Bound but never listening: connections to 127.0.0.1:443 are refused by the kernel. The emulator
+# reaches it as 10.0.2.2:443, which the preview profile allows, so a refusal must come back to the
+# app as a reset rather than as "connected" or a timeout. Binding fails loudly if anything else
+# already listens there.
+refused = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+refused.bind(("127.0.0.1", 443))
 
 with socketserver.ThreadingTCPServer(("127.0.0.1", 80), Echo) as web, \
      socketserver.ThreadingTCPServer(("127.0.0.1", 8080), Echo) as blocked, \
