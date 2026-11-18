@@ -101,7 +101,7 @@
     <string name="performance_title">Performance</string>
     <string name="performance_scope">Measurements update every two seconds while this screen is open.</string>
     <string name="performance_cpu">NetScope CPU</string>
-    <string name="performance_cpu_explanation">Process usage including VPN work. 100% equals one fully used CPU core.</string>
+    <string name="performance_cpu_explanation">Process usage including VPN work. 100 percent equals one fully used CPU core.</string>
     <string name="performance_app_ram">NetScope memory</string>
     <string name="performance_app_ram_explanation">PSS counts private memory and a proportional share of shared memory.</string>
     <string name="performance_device_ram">Device memory</string>
