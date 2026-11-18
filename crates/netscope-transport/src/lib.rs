@@ -3,7 +3,7 @@ use netscope_conntrack::FlowId;
 use netscope_dns::{parse_query, parse_response, DomainPolicy, Message};
 use netscope_engine::{Config, DropReason, Engine, Outcome, Stats};
 use netscope_packet::{parse, udp, Protocol};
-use netscope_policy::{Action, Policy, PolicyError, Rule};
+use netscope_policy::{Action, Context, Policy, PolicyError, Rule};
 use std::{
     collections::{BTreeSet, HashMap},
     io,
@@ -48,9 +48,14 @@ pub struct Sent {
     pub flow: FlowId,
     pub payload_bytes: usize,
 }
+/// One upstream socket and the uid/network context its flow was admitted with.
+struct UdpFlow {
+    socket: UdpSocket,
+    context: Context,
+}
 pub struct UdpRelay<P> {
     engine: Engine,
-    sockets: HashMap<FlowId, UdpSocket>,
+    sockets: HashMap<FlowId, UdpFlow>,
     protector: P,
     mtu: usize,
     receive_buffer: Box<[u8]>,
@@ -99,6 +104,18 @@ impl<P: SocketProtector> UdpRelay<P> {
     /// Validate/admit a full IP/UDP datagram, then send its payload using one protected socket per flow.
     /// WouldBlock/error is returned; there is no hidden retry queue or background task.
     pub fn send(&mut self, bytes: &[u8], now: u64) -> Result<Sent, RelayError> {
+        self.send_in(bytes, now, &Context::default())
+    }
+    /// [`UdpRelay::send`] for a flow whose uid/network the caller resolved. The context is
+    /// recorded when the flow is created and reused for every later packet and reply of that
+    /// flow; a different context passed for an existing flow is ignored. A network change should
+    /// go through `reset_network`.
+    pub fn send_in(
+        &mut self,
+        bytes: &[u8],
+        now: u64,
+        context: &Context,
+    ) -> Result<Sent, RelayError> {
         self.expire(now)?;
         if bytes.len() > self.mtu {
             return Err(RelayError::MtuExceeded);
@@ -112,6 +129,10 @@ impl<P: SocketProtector> UdpRelay<P> {
             return Err(RelayError::UnsupportedAddress);
         }
         let candidate_id = FlowId::from(&metadata);
+        let context = self
+            .sockets
+            .get(&candidate_id)
+            .map_or(*context, |flow| flow.context);
         let dns_query = if let Some(policy) = self
             .dns_policy
             .as_ref()
@@ -137,7 +158,7 @@ impl<P: SocketProtector> UdpRelay<P> {
         } else {
             None
         };
-        let packet = match self.engine.process(bytes, now) {
+        let packet = match self.engine.process_in(bytes, now, &context) {
             Outcome::Accepted { packet, .. } => packet,
             Outcome::Dropped(reason) => return Err(RelayError::Dropped(reason)),
         };
@@ -156,7 +177,7 @@ impl<P: SocketProtector> UdpRelay<P> {
             })();
             match opened {
                 Ok(socket) => {
-                    self.sockets.insert(id, socket);
+                    self.sockets.insert(id, UdpFlow { socket, context });
                 }
                 Err(error) => {
                     self.forget(&id);
@@ -165,7 +186,7 @@ impl<P: SocketProtector> UdpRelay<P> {
             }
         }
         let offset = if packet.source.is_ipv4() { 28 } else { 48 };
-        let result = self.sockets[&id].send(&bytes[offset..]);
+        let result = self.sockets[&id].socket.send(&bytes[offset..]);
         match result {
             Ok(count) if count == bytes.len() - offset => {
                 if let Some(query) = dns_query {
@@ -195,8 +216,9 @@ impl<P: SocketProtector> UdpRelay<P> {
     /// Responses require their own CURRENT directional policy decision; outbound allow is not inbound allow.
     pub fn receive(&mut self, id: FlowId, now: u64) -> Result<Vec<u8>, RelayError> {
         self.expire(now)?;
-        let socket = self.sockets.get(&id).ok_or(RelayError::UnknownFlow)?;
-        let count = match socket.recv(&mut self.receive_buffer) {
+        let flow = self.sockets.get(&id).ok_or(RelayError::UnknownFlow)?;
+        let context = flow.context;
+        let count = match flow.socket.recv(&mut self.receive_buffer) {
             Ok(count) => count,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 return Err(RelayError::Io(error))
@@ -245,7 +267,10 @@ impl<P: SocketProtector> UdpRelay<P> {
             &self.receive_buffer[..count],
         )
         .map_err(RelayError::Encode)?;
-        match self.engine.authorize_response(&response, &id, now) {
+        match self
+            .engine
+            .authorize_response_in(&response, &id, now, &context)
+        {
             Outcome::Accepted { .. } => {
                 self.dns_pending.remove(&id);
                 self.engine.refresh_flow(&id, now);
@@ -286,12 +311,22 @@ impl<P: SocketProtector> UdpRelay<P> {
         use std::os::fd::AsFd;
         self.sockets
             .iter()
-            .map(|(id, socket)| (*id, socket.as_fd(), rustix::event::PollFlags::IN))
+            .map(|(id, flow)| (*id, flow.socket.as_fd(), rustix::event::PollFlags::IN))
             .collect()
     }
     /// A valid policy update closes ALL existing UDP sockets/observations; invalid input changes nothing.
     pub fn update_policy(&mut self, rules: Vec<Rule>, default: Action) -> Result<(), PolicyError> {
         self.engine.update_policy(rules, default)?;
+        self.reset_network();
+        Ok(())
+    }
+    /// [`UdpRelay::update_policy`] for rules with uid/network constraints.
+    pub fn update_context_policy(
+        &mut self,
+        rules: Vec<netscope_policy::ContextRule>,
+        default: Action,
+    ) -> Result<(), PolicyError> {
+        self.engine.update_context_policy(rules, default)?;
         self.reset_network();
         Ok(())
     }

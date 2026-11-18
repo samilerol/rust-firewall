@@ -32,6 +32,12 @@ Outbound activity refreshes the original flow, and so does each authorized UDP r
 
 Supported endpoints are nonzero-port unicast destinations with explicit policy permission. Unspecified, multicast, limited broadcast, IPv4-mapped IPv6 aliases and IPv6 link-local destinations without scope are rejected; alias rejection avoids implicit OS family/address reinterpretation. Loopback is intentionally allowed for explicit policies/tests. Interface-scoped routing, directed-broadcast classification, multicast and IPv6 scope identifiers need future platform design.
 
+## Flow context: uid and network
+
+`netscope_policy::Context { uid: Option<u32>, network: Network }` carries facts packets cannot prove. `ContextRule` wraps a normal `Rule` with an optional `UidMatch` (`Range` or explicit `Unknown`) and an optional `Network` (`Unknown`, `Wifi`, `Cellular`, `Other`); every present constraint must match, ordering is still (priority, input order) and plain rules ignore context. A `Range` never matches an unresolved uid and `UidMatch::Unknown` matches only an unresolved one, so unknown-uid handling is an explicit rule or the default action, never an accident. An inverted uid range rejects the whole policy (`InvalidUidRange`). The context-free APIs (`decide`, `process`, `authorize_response`, `send`, `ingest`) behave as unknown uid and unknown network.
+
+`Engine::process_in`/`authorize_response_in`, `UdpRelay::send_in` and `TcpRelay::ingest_in` take the context. A relay records it with the packet that creates the flow and reuses it for every later packet and every reply or output packet of that flow, so replies are evaluated as the original flow; a different context passed for an existing flow is ignored. A network change must go through `reset_network`. `update_context_policy` replaces a policy atomically like `update_policy`. The core does not resolve uids: the platform adapter must (on Android through a supported connection-owner lookup), and resolution can fail or race. Uids are attribution, not authentication. There is no per-uid quota yet and no device evidence.
+
 ## Validation and next work
 
 Local tests execute real IPv4 and IPv6 loopback echo, no external hosts. They exercise checked replies, empty datagrams, socket reuse, denied traffic, failed protection/no send, capacity, exact expiry, transactional policy changes, network resets, response policy and MTU rejection. This does not prove Android routing, leak prevention, WAN reliability or battery behavior.

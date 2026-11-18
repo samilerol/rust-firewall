@@ -1,6 +1,6 @@
 use netscope_engine::{Config, DropReason};
 use netscope_packet::{parse_checked, udp, ChecksumPolicy};
-use netscope_policy::{Action, Policy, Rule};
+use netscope_policy::{Action, Context, ContextRule, Network, Policy, Rule, UidMatch};
 use netscope_transport::{RelayError, SocketProtector, UdpRelay};
 use std::{
     io,
@@ -428,4 +428,68 @@ fn wait_ready_reports_only_flows_with_a_datagram_and_honors_deadlines() {
         .unwrap()
         .is_empty());
     assert_eq!(r.flow_count(), 0);
+}
+#[test]
+fn uid_policy_gates_admission_and_the_flow_context_authorizes_replies() {
+    let (endpoint, server) = echo("127.0.0.1:0");
+    let allow = Rule {
+        priority: 0,
+        action: Action::Allow,
+        source: None,
+        destination: None,
+        protocol: None,
+        source_port: None,
+        destination_port: None,
+    };
+    let policy = Policy::with_context_rules(
+        vec![ContextRule {
+            rule: allow,
+            uid: Some(UidMatch::Range(10_001..=10_001)),
+            network: Some(Network::Wifi),
+        }],
+        Action::Deny,
+    )
+    .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut r = UdpRelay::new(
+        policy,
+        Config {
+            max_flows: 2,
+            timeout: 10,
+            checksums: ChecksumPolicy::Require,
+        },
+        1500,
+        Protector {
+            calls: calls.clone(),
+            fail: false,
+        },
+    )
+    .unwrap();
+    let datagram = request(endpoint, 1234, b"hello");
+    let wrong_uid = Context {
+        uid: Some(10_002),
+        network: Network::Wifi,
+    };
+    assert!(matches!(
+        r.send_in(&datagram, 0, &wrong_uid),
+        Err(RelayError::Dropped(DropReason::Policy { .. }))
+    ));
+    assert!(matches!(
+        r.send(&datagram, 0),
+        Err(RelayError::Dropped(DropReason::Policy { .. }))
+    ));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "denied flows open no socket"
+    );
+    let app = Context {
+        uid: Some(10_001),
+        network: Network::Wifi,
+    };
+    let sent = r.send_in(&datagram, 0, &app).unwrap();
+    // The reply is admitted with the stored context; a later send with another context is ignored.
+    r.send_in(&datagram, 1, &wrong_uid).unwrap();
+    assert_eq!(&receive(&mut r, sent.flow).unwrap()[28..], b"hello");
+    server.join().unwrap();
 }

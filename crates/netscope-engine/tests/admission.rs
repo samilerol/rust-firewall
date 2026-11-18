@@ -1,7 +1,7 @@
 use netscope_conntrack::FlowId;
 use netscope_engine::{Config, DropReason, Engine, Outcome, MAX_FLOWS};
 use netscope_packet::{parse, udp, ChecksumPolicy, ParseError};
-use netscope_policy::{Action, Policy, Rule};
+use netscope_policy::{Action, Context, ContextRule, Network, Policy, Rule, UidMatch};
 fn packet(port: u16) -> Vec<u8> {
     udp::encode(
         format!("192.0.2.1:{port}").parse().unwrap(),
@@ -199,4 +199,96 @@ fn refresh_extends_an_existing_flow_but_never_creates_one() {
     assert_eq!(e.expire(18), Ok(0));
     assert!(e.contains_flow(&id));
     assert_eq!(e.expire(19), Ok(1));
+}
+fn uid_policy() -> Policy {
+    let allow_app = Rule {
+        priority: 0,
+        action: Action::Allow,
+        source: None,
+        destination: None,
+        protocol: None,
+        source_port: None,
+        destination_port: None,
+    };
+    Policy::with_context_rules(
+        vec![ContextRule {
+            rule: allow_app,
+            uid: Some(UidMatch::Range(10_001..=10_001)),
+            network: Some(Network::Wifi),
+        }],
+        Action::Deny,
+    )
+    .unwrap()
+}
+fn context_engine() -> Engine {
+    Engine::new(
+        uid_policy(),
+        Config {
+            max_flows: 4,
+            timeout: 10,
+            checksums: ChecksumPolicy::Require,
+        },
+    )
+    .unwrap()
+}
+#[test]
+fn admission_and_responses_use_the_flow_context() {
+    let app_on_wifi = Context {
+        uid: Some(10_001),
+        network: Network::Wifi,
+    };
+    let mut e = context_engine();
+    // Wrong uid, unknown uid, wrong network and the context-free API all hit the default deny.
+    for context in [
+        Context {
+            uid: Some(10_002),
+            network: Network::Wifi,
+        },
+        Context {
+            uid: None,
+            network: Network::Wifi,
+        },
+        Context {
+            uid: Some(10_001),
+            network: Network::Cellular,
+        },
+    ] {
+        assert!(!accepted(e.process_in(&packet(1234), 0, &context)));
+    }
+    assert!(!accepted(e.process(&packet(1234), 0)));
+    assert_eq!(e.flow_count(), 0);
+    assert!(accepted(e.process_in(&packet(1234), 1, &app_on_wifi)));
+    // The reply is evaluated with the original flow's context, not the default one.
+    let id = FlowId::from(&parse(&packet(1234)).unwrap());
+    let reply = udp::encode(
+        "198.51.100.2:53".parse().unwrap(),
+        "192.0.2.1:1234".parse().unwrap(),
+        b"abc",
+    )
+    .unwrap();
+    assert!(accepted(e.authorize_response_in(
+        &reply,
+        &id,
+        2,
+        &app_on_wifi
+    )));
+    assert!(!accepted(e.authorize_response(&reply, &id, 2)));
+    // A context policy replaces atomically and an invalid one keeps the old state.
+    let bad = ContextRule {
+        rule: Rule {
+            priority: 0,
+            action: Action::Allow,
+            source: None,
+            destination: None,
+            protocol: None,
+            source_port: None,
+            destination_port: None,
+        },
+        uid: Some(UidMatch::Range(std::ops::RangeInclusive::new(5, 4))),
+        network: None,
+    };
+    assert!(e.update_context_policy(vec![bad], Action::Allow).is_err());
+    assert_eq!(e.flow_count(), 1);
+    e.update_context_policy(vec![], Action::Allow).unwrap();
+    assert_eq!(e.flow_count(), 0);
 }

@@ -1267,3 +1267,79 @@ fn a_single_threaded_tun_loop_serves_tcp_and_udp_through_one_combined_wait() {
     tcp_server.join().unwrap();
     udp_server.join().unwrap();
 }
+#[test]
+fn uid_policy_gates_tcp_admission_and_the_flow_context_authorizes_output() {
+    use netscope_policy::{ContextRule, Network, UidMatch};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = Client::new(listener.local_addr().unwrap());
+    let syn = client.syn();
+    let allow = Rule {
+        priority: 0,
+        action: Action::Allow,
+        source: None,
+        destination: None,
+        protocol: None,
+        source_port: None,
+        destination_port: None,
+    };
+    let policy = Policy::with_context_rules(
+        vec![ContextRule {
+            rule: allow,
+            uid: Some(UidMatch::Range(10_001..=10_001)),
+            network: Some(Network::Wifi),
+        }],
+        Action::Deny,
+    )
+    .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut r = TcpRelay::new(
+        policy,
+        config(),
+        Protector {
+            calls: calls.clone(),
+            fail: false,
+        },
+    )
+    .unwrap();
+    for context in [
+        Context::default(),
+        Context {
+            uid: Some(10_002),
+            network: Network::Wifi,
+        },
+        Context {
+            uid: Some(10_001),
+            network: Network::Cellular,
+        },
+    ] {
+        assert!(matches!(
+            r.ingest_in(&syn, 0, &context),
+            Err(Error::Dropped(DropReason::Policy { .. }))
+        ));
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "denied SYNs open no upstream"
+    );
+    let app = Context {
+        uid: Some(10_001),
+        network: Network::Wifi,
+    };
+    r.ingest_in(&syn, 0, &app).unwrap();
+    settle(&mut r, 0);
+    // Output passes the reverse-flow check with the stored context (the default would be denied).
+    let synack = r
+        .next_packet(0)
+        .unwrap()
+        .expect("SYN-ACK for the allowed uid");
+    client.device.rx = Some(synack);
+    client.poll(0);
+    assert_eq!(client_state(&client), State::Established);
+    // Later packets use the stored context even if the caller passes a different one.
+    client.poll(1);
+    while let Some(bytes) = client.device.tx.pop_front() {
+        r.ingest_in(&bytes, 1, &Context::default()).unwrap();
+    }
+    assert_eq!(r.flow_count(), 1);
+}

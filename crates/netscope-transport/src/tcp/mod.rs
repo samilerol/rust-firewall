@@ -4,7 +4,7 @@ use self::device::Device;
 use netscope_conntrack::FlowId;
 use netscope_engine::{Config as EngineConfig, DropReason, Engine, Outcome};
 use netscope_packet::{parse_checked, ChecksumPolicy, Protocol};
-use netscope_policy::{Action, Policy, PolicyError, Rule};
+use netscope_policy::{Action, Context, Policy, PolicyError, Rule};
 use smoltcp::{
     iface::{Config as IfaceConfig, Interface, SocketHandle, SocketSet},
     phy::ChecksumCapabilities,
@@ -87,6 +87,8 @@ struct Flow {
     graceful: bool,
     /// The stack saw new client input (or the flow is new) and the upstream must be re-pumped.
     dirty: bool,
+    /// uid/network the flow was admitted with; reused for every packet and reply of the flow.
+    context: Context,
 }
 impl Drop for Flow {
     fn drop(&mut self) {
@@ -159,6 +161,7 @@ impl Flow {
             failed: false,
             graceful: false,
             dirty: true,
+            context: Context::default(),
         })
     }
     /// Whether the stack has timer or dispatch work due at `now` (cheap, no syscall).
@@ -430,8 +433,15 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     }
     /// Feed the initial SYN to a new stack flow and connect upstream. If the upstream cannot be
     /// opened, the client's SYN is answered with a RST instead of being left to time out.
-    fn open_flow(&mut self, id: FlowId, bytes: &[u8], now: u64) -> Result<Flow, Error> {
+    fn open_flow(
+        &mut self,
+        id: FlowId,
+        bytes: &[u8],
+        now: u64,
+        context: Context,
+    ) -> Result<Flow, Error> {
         let mut flow = Flow::new(id, self.config, now)?;
+        flow.context = context;
         flow.device.rx = Some(bytes.to_vec());
         flow.stack_poll(now);
         if flow.sockets.get::<StackSocket>(flow.handle).state() != State::SynReceived {
@@ -452,6 +462,18 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     }
     /// Feed a complete checksummed IP/TCP datagram. A new flow must start with a payload-free SYN.
     pub fn ingest(&mut self, bytes: &[u8], now: u64) -> Result<FlowId, Error> {
+        self.ingest_in(bytes, now, &Context::default())
+    }
+    /// [`TcpRelay::ingest`] for a flow whose uid/network the caller resolved. The context is
+    /// recorded with the SYN that creates the flow and reused for every later packet and reply
+    /// of that flow; a different context passed for an existing flow is ignored. A network
+    /// change should go through `reset_network`.
+    pub fn ingest_in(
+        &mut self,
+        bytes: &[u8],
+        now: u64,
+        context: &Context,
+    ) -> Result<FlowId, Error> {
         self.maintain(now)?;
         if bytes.len() > self.config.mtu {
             return Err(Error::Unsupported);
@@ -487,12 +509,13 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         if self.flows.get(&id).is_some_and(|f| f.device.rx.is_some()) {
             return Err(Error::Backpressure);
         }
-        match self.engine.process(bytes, now) {
+        let context = self.flows.get(&id).map_or(*context, |flow| flow.context);
+        match self.engine.process_in(bytes, now, &context) {
             Outcome::Dropped(reason) => return Err(Error::Dropped(reason)),
             Outcome::Accepted { .. } => {}
         }
         if !self.flows.contains_key(&id) {
-            match self.open_flow(id, bytes, now) {
+            match self.open_flow(id, bytes, now, context) {
                 Ok(flow) => {
                     self.flows.insert(id, flow);
                     self.round_robin.push_back(id);
@@ -666,7 +689,10 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             let Some(bytes) = flow.device.tx.pop_front() else {
                 continue;
             };
-            match self.engine.authorize_response(&bytes, &id, now) {
+            match self
+                .engine
+                .authorize_response_in(&bytes, &id, now, &flow.context)
+            {
                 Outcome::Accepted { .. } => return Ok(Some(bytes)),
                 Outcome::Dropped(reason) => {
                     self.forget(&id);
@@ -678,6 +704,16 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     }
     pub fn update_policy(&mut self, rules: Vec<Rule>, default: Action) -> Result<(), PolicyError> {
         self.engine.update_policy(rules, default)?;
+        self.reset_network();
+        Ok(())
+    }
+    /// [`TcpRelay::update_policy`] for rules with uid/network constraints.
+    pub fn update_context_policy(
+        &mut self,
+        rules: Vec<netscope_policy::ContextRule>,
+        default: Action,
+    ) -> Result<(), PolicyError> {
+        self.engine.update_context_policy(rules, default)?;
         self.reset_network();
         Ok(())
     }
