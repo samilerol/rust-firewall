@@ -141,6 +141,10 @@ impl Engine {
             let _ = self.flows.observe(*id, now);
         }
     }
+    /// Tick at which the oldest tracked flow expires; lets a caller sleep until then.
+    pub fn next_expiry(&self) -> Option<u64> {
+        self.flows.next_expiry()
+    }
     pub fn flow_count(&self) -> usize {
         self.flows.len()
     }

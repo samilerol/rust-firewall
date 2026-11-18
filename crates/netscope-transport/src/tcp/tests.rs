@@ -151,7 +151,7 @@ impl Client {
         report
     }
 }
-fn echo(address: &str, payload: Vec<u8>, drop_synack: bool) {
+fn echo(address: &str, payload: Vec<u8>, drop_synack: bool, readiness: bool) {
     let listener = TcpListener::bind(address).unwrap();
     let endpoint = listener.local_addr().unwrap();
     let expected = payload.clone();
@@ -186,7 +186,15 @@ fn echo(address: &str, payload: Vec<u8>, drop_synack: bool) {
         while let Some(bytes) = client.device.tx.pop_front() {
             relay.ingest(&bytes, now).unwrap();
         }
-        relay.poll(now).unwrap();
+        if readiness {
+            // Over-approximate the event loop: every flow that declares interest is "ready".
+            // The echo can only finish if the declared interest never omits a flow that needs
+            // pumping; the loop reaps closed flows through poll_ready as well.
+            let ready: Vec<FlowId> = relay.upstream_waits().map(|wait| wait.flow).collect();
+            relay.poll_ready(now, &ready).unwrap();
+        } else {
+            relay.poll(now).unwrap();
+        }
         while let Some(bytes) = relay.next_packet(now).unwrap() {
             assert!(parse_checked(&bytes, ChecksumPolicy::Require).is_ok());
             if !dropped {
@@ -233,15 +241,25 @@ fn ipv4_tcp_echo_half_close_and_partial_buffering() {
         "127.0.0.1:0",
         (0..100_000).map(|i| (i % 251) as u8).collect(),
         false,
+        false,
+    );
+}
+#[test]
+fn ipv4_tcp_echo_driven_only_by_declared_readiness() {
+    echo(
+        "127.0.0.1:0",
+        (0..100_000).map(|i| (i % 251) as u8).collect(),
+        false,
+        true,
     );
 }
 #[test]
 fn ipv6_tcp_echo_half_close() {
-    echo("[::1]:0", b"IPv6 real TCP echo".repeat(100), false);
+    echo("[::1]:0", b"IPv6 real TCP echo".repeat(100), false, false);
 }
 #[test]
 fn dropped_synack_retransmits_without_duplicate_upstream_socket() {
-    echo("127.0.0.1:0", b"retransmission".to_vec(), true);
+    echo("127.0.0.1:0", b"retransmission".to_vec(), true, false);
 }
 #[test]
 fn invalid_denied_or_unprotected_syn_never_connects() {
@@ -859,4 +877,164 @@ fn the_maximum_flow_count_is_accepted_within_the_memory_budget() {
     )
     .unwrap();
     assert_eq!(relay.flow_count(), 0);
+}
+fn stack_send_queue(r: &TcpRelay<Protector>, id: &FlowId) -> usize {
+    let flow = &r.flows[id];
+    flow.sockets.get::<StackSocket>(flow.handle).send_queue()
+}
+fn flow_with_source_port(r: &TcpRelay<Protector>, port: u16) -> FlowId {
+    *r.flows.keys().find(|id| id.source_port == port).unwrap()
+}
+#[test]
+fn interest_follows_connect_and_stack_state() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = Client::new(listener.local_addr().unwrap());
+    let (mut r, _) = relay(Action::Allow, false);
+    assert_eq!(r.upstream_waits().count(), 0);
+    let id = r.ingest(&client.syn(), 0).unwrap();
+    r.flows.get_mut(&id).unwrap().connecting = true; // deterministic pending connect
+    let waits: Vec<_> = r.upstream_waits().collect();
+    assert_eq!(waits.len(), 1);
+    assert_eq!(waits[0].flow, id);
+    assert!(waits[0].fd >= 0);
+    // A pending connect completes as writability, nothing to read yet.
+    assert_eq!(
+        waits[0].interest,
+        Interest {
+            readable: false,
+            writable: true
+        }
+    );
+    settle(&mut r, 0);
+    for now in 0..4 {
+        client.step(&mut r, now);
+    }
+    assert_eq!(client_state(&client), State::Established);
+    // Established and idle: only upstream data is awaited.
+    let idle = r.upstream_waits().next().unwrap().interest;
+    assert_eq!(
+        idle,
+        Interest {
+            readable: true,
+            writable: false
+        }
+    );
+    // Client bytes ingested but not yet pumped: the upstream must become writable.
+    client
+        .sockets
+        .get_mut::<StackSocket>(client.handle)
+        .send_slice(b"abc")
+        .unwrap();
+    client.poll(4);
+    while let Some(bytes) = client.device.tx.pop_front() {
+        r.ingest(&bytes, 4).unwrap();
+    }
+    assert!(r.upstream_waits().next().unwrap().interest.writable);
+    // A failed flow has nothing to wait for.
+    r.flows.get_mut(&id).unwrap().failed = true;
+    assert_eq!(r.upstream_waits().count(), 0);
+}
+#[test]
+fn poll_ready_pumps_only_the_flows_named_ready() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let mut a = Client::with_port(endpoint, 12345);
+    let mut b = Client::with_port(endpoint, 12346);
+    let (mut r, _) = relay(Action::Allow, false);
+    for now in 0..20 {
+        a.step(&mut r, now);
+        b.step(&mut r, now);
+        if client_state(&a) == State::Established && client_state(&b) == State::Established {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(client_state(&a), State::Established);
+    assert_eq!(client_state(&b), State::Established);
+    // Deliver the clients' final handshake ACKs so the relay side is established too.
+    a.step(&mut r, 29);
+    b.step(&mut r, 29);
+    r.poll(30).unwrap(); // clears every dirty mark
+    let id_a = flow_with_source_port(&r, 12345);
+    let id_b = flow_with_source_port(&r, 12346);
+    let upstream_addr = |id: &FlowId| r.flows[id].upstream.as_ref().unwrap().local_addr().unwrap();
+    let (addr_a, addr_b) = (upstream_addr(&id_a), upstream_addr(&id_b));
+    let mut servers = [listener.accept().unwrap(), listener.accept().unwrap()];
+    servers.sort_by_key(|(_, peer)| *peer != addr_a); // upstream of flow A first
+    assert_eq!(servers[0].1, addr_a);
+    assert_eq!(servers[1].1, addr_b);
+    for (stream, _) in &mut servers {
+        stream.write_all(b"hi").unwrap();
+    }
+    let deadline = Wall::now() + Duration::from_secs(2);
+    while stack_send_queue(&r, &id_a) == 0 {
+        assert!(Wall::now() < deadline, "ready flow was never pumped");
+        r.poll_ready(31, &[id_a]).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        stack_send_queue(&r, &id_b),
+        0,
+        "a flow not reported ready must not be read"
+    );
+    r.poll_ready(31, &[id_a]).unwrap();
+    assert_eq!(stack_send_queue(&r, &id_b), 0);
+    while stack_send_queue(&r, &id_b) == 0 {
+        assert!(Wall::now() < deadline, "second flow was never pumped");
+        r.poll_ready(31, &[id_b]).unwrap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Unknown and duplicate ids are ignored.
+    let mut unknown = id_a;
+    unknown.source_port = 1;
+    r.poll_ready(32, &[unknown, id_a, id_a]).unwrap();
+}
+#[test]
+fn next_wakeup_reports_time_work_and_ignores_backpressured_flows() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = Client::new(listener.local_addr().unwrap());
+    let (mut r, _) = relay(Action::Allow, false);
+    assert_eq!(r.next_wakeup(0), None);
+    let id = r.ingest(&client.syn(), 0).unwrap();
+    assert_eq!(
+        r.next_wakeup(0),
+        Some(0),
+        "unprocessed client input is due now"
+    );
+    r.flows.get_mut(&id).unwrap().connecting = true;
+    r.poll(0).unwrap();
+    r.flows.get_mut(&id).unwrap().connecting = true;
+    assert!(
+        r.next_wakeup(0).unwrap() <= 1000,
+        "connect deadline bounds the wait"
+    );
+    settle(&mut r, 0);
+    for now in 0..4 {
+        client.step(&mut r, now);
+    }
+    let wake = r.next_wakeup(4).expect("idle expiry is always scheduled");
+    assert!(
+        (4..=30_003).contains(&wake),
+        "wakeup {wake} outside idle window"
+    );
+    // Full output queue: only draining it can help, so time must not report busy work.
+    let mut cfg = config();
+    cfg.output_slots = 1;
+    let mut full = TcpRelay::new(
+        Policy::new(vec![], Action::Allow).unwrap(),
+        cfg,
+        Protector {
+            calls: Arc::new(AtomicUsize::new(0)),
+            fail: false,
+        },
+    )
+    .unwrap();
+    let mut second = Client::new(listener.local_addr().unwrap());
+    let syn = second.syn();
+    full.ingest(&syn, 0).unwrap();
+    full.ingest(&syn, 0).unwrap();
+    settle(&mut full, 0);
+    full.poll(1).unwrap();
+    assert!(!full.flows.values().next().unwrap().device.available());
+    assert_eq!(full.next_wakeup(1), Some(30_000));
 }

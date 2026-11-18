@@ -24,6 +24,16 @@ A targeted RustSec snapshot inspection at database revision 02e2517f457a359fc6d3
 
 A full output queue pauses smoltcp transmission/ingress processing. There is one additional ingress slot per flow; further packets return Backpressure before overwriting it. Callers must preserve/retry within their own bounded scheduler or accept TCP retransmission; no hidden queue or background task exists.
 
+### Readiness-driven polling (caller-owned event loop)
+
+`poll` stays the simple full scan: one non-blocking read and write attempt (a syscall each) per active flow per call. For many flows the caller can instead wait on the upstream sockets itself, because the std library offers no safe wait primitive and this crate forbids `unsafe` and adds no event-loop dependency:
+
+1. `upstream_waits()` (unix) lists `UpstreamWait { flow, fd, interest }` for flows that can make progress: a pending connect waits for writability, an established flow waits for readability while the stack has room to carry bytes to the client, and for writability while client bytes are waiting to be written upstream. Flows waiting on the client, with a full output queue or failed are omitted. The fd is borrowed and valid only until the next call that mutates the relay; never close or retain it. Interest is level-triggered: report an fd again while its condition holds.
+2. `next_wakeup(now)` is the earliest time with time-driven work (idle expiry, connect deadline, stack timers), `Some(now)` when ingested client input is unprocessed, and `None` when only fd readiness or new input can help. Flows whose output queue is full are ignored: only draining `next_packet` unblocks them, so they never cause a busy wake.
+3. After the wait, call `poll_ready(now, &ready_flows)`. It pumps only the named flows and flows with new client input; connect deadlines, stack timers, idle expiry and reaping still run for every flow, without a syscall. Unknown or duplicate ids are ignored. Keep draining `next_packet` and feeding `ingest` as before.
+
+Over-approximating readiness is safe (an unready flow just sees `WouldBlock`); omitting a flow that needs a pump is not, so build the wait set from `upstream_waits()` each round. A loopback measurement on idle established flows (release build, not a device): `poll` costs about 18/76/540 microseconds per pass at 64/256/1000 flows, `poll_ready` with nothing ready about 3/15/53 microseconds; the remaining cost is a syscall-free O(flows) loop. No Android or battery result exists, and this crate still contains no OS wait itself.
+
 ## Lifecycle and policy
 
 FIN in either direction shuts down only that write half after its pending bytes drain. The other direction remains usable. Virtual TIME-WAIT is retained until stack closure or configured expiry. A valid client reset, including SYN-RECEIVED returning to LISTEN, immediately removes that flow/upstream; an out-of-window reset does not kill the connection. Normal completion may release the upstream before virtual TIME-WAIT ends.
@@ -40,14 +50,14 @@ Time is monotonic u64 milliseconds. smoltcp stores i64 microseconds; MAX_TIME_MS
 - Raw-IP MTU 1280..1500; oversize input is rejected. IPv4 options/fragments and IPv6 extension headers remain unsupported by the front parser.
 - Each stream direction reserves 1024..65536 bytes, one ingress packet slot and 1..16 output slots per flow.
 - Config validates `max_flows * (2*buffer_bytes + (output_slots+1)*MTU)` against an explicit payload budget <=16 MiB before allocation. Allocator metadata, smoltcp metadata/assembler records, OS buffers and application-held returned packets are not included in this byte estimate. OS send/receive buffer settings are bounded hints, not exact kernel accounting.
-- Connect deadline 1..30000 ms, idle timeout 1..86400000 ms and connect <= idle. The API does not spawn threads, allocate queues without a cap, or busy-wait internally. Poll cost is O(active flows); no readiness multiplexer is present.
+- Connect deadline 1..30000 ms, idle timeout 1..86400000 ms and connect <= idle. The API does not spawn threads, allocate queues without a cap, or busy-wait internally. `poll` costs O(active flows) with a syscall per flow; `poll_ready` is O(active flows) without syscalls for idle flows. No readiness multiplexer is present in this crate.
 - Device output tokens rely on smoltcp's MTU contract. An internal assertion rejects above-MTU output before allocation if the dependency breaks that contract; fuzz/host tests exercise it, without claiming a proof against all dependency bugs.
 
 ## Scope and remaining work
 
 This adds generic TCP bytes, **not TCP DNS filtering**. The existing DNS guard applies only to selected UDP ports. For a profile requiring classic DNS-domain enforcement, deny TCP/53 in packet policy until a bounded TCP DNS stream guard exists; DoH/DoT/DoQ and alias/rebinding controls remain outside that guard. Other current limitations include initial ECN/TFO/simultaneous-open, urgent semantics, per-app UID attribution, OS network transition hooks, transparent source identity, ICMP/path-MTU/error translation and WAN/device interoperability. No production secure/leak-free claim is made.
 
-Next: readiness/backpressure scheduling, per-app/global fairness and handshake quotas, evaluated TCP DNS framing, broader options/loss/reorder/long-running tests, protected platform integration and measured memory/battery behavior. Do not convert host evidence into Android or cross-network protection claims.
+Next: an event loop that uses the readiness hooks (needs a reviewed OS wait: a safe wrapper dependency or an isolated unsafe boundary), backpressure scheduling, per-app/global fairness and handshake quotas, evaluated TCP DNS framing, broader options/loss/reorder/long-running tests, protected platform integration and measured memory/battery behavior. Do not convert host evidence into Android or cross-network protection claims.
 
 ## Validation
 

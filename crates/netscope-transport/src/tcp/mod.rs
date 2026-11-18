@@ -14,7 +14,7 @@ use smoltcp::{
 };
 use socket2::{Domain, Protocol as OsProtocol, SockRef, Socket, Type};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::{self, Read, Write},
     net::{Shutdown, SocketAddr, TcpStream},
     time::Duration,
@@ -85,6 +85,8 @@ struct Flow {
     write_shutdown: bool,
     failed: bool,
     graceful: bool,
+    /// The stack saw new client input (or the flow is new) and the upstream must be re-pumped.
+    dirty: bool,
 }
 impl Drop for Flow {
     fn drop(&mut self) {
@@ -156,7 +158,18 @@ impl Flow {
             write_shutdown: false,
             failed: false,
             graceful: false,
+            dirty: true,
         })
+    }
+    /// Whether the stack has timer or dispatch work due at `now` (cheap, no syscall).
+    fn stack_due(&mut self, now: u64) -> bool {
+        if !self.device.available() {
+            return false;
+        }
+        let at = Instant::from_millis(now as i64);
+        self.iface
+            .poll_at(at, &self.sockets)
+            .is_some_and(|due| due <= at)
     }
     fn stack_poll(&mut self, now: u64) {
         self.iface.poll(
@@ -174,6 +187,26 @@ impl Flow {
         self.sockets.get_mut::<StackSocket>(self.handle).abort();
         self.failed = true;
         self.stack_poll(now);
+    }
+    /// Which upstream readiness would let this flow make progress right now.
+    fn interest(&self) -> Interest {
+        if self.failed || self.upstream.is_none() {
+            return Interest::default();
+        }
+        if self.connecting {
+            // A pending connect completes (or fails) as writability.
+            return Interest {
+                readable: false,
+                writable: true,
+            };
+        }
+        let socket = self.sockets.get::<StackSocket>(self.handle);
+        Interest {
+            // Room to carry upstream bytes toward the client.
+            readable: socket.can_send() && !self.up_eof,
+            // Client bytes waiting to be written upstream.
+            writable: socket.can_recv(),
+        }
     }
     /// Abortive close of a flow the relay is discarding: returns the RST the client needs,
     /// or None when the stack socket is not an active connection (nothing to reset).
@@ -273,6 +306,23 @@ fn queue_reset(resets: &mut VecDeque<Vec<u8>>, limit: usize, packet: Option<Vec<
             resets.push_back(packet);
         }
     }
+}
+/// Upstream readiness that would let a flow make progress. Level-triggered: the caller's
+/// readiness wait should report the fd again while the condition holds.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Interest {
+    pub readable: bool,
+    pub writable: bool,
+}
+/// One upstream stream the caller's event loop should wait on.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UpstreamWait {
+    pub flow: FlowId,
+    /// Borrowed from the relay: valid only until the next call that mutates it. Never close or
+    /// retain it; re-read the waits after every `ingest`, `poll`, `poll_ready` or `next_packet`.
+    pub fd: std::os::fd::RawFd,
+    pub interest: Interest,
 }
 pub struct TcpRelay<P> {
     config: Config,
@@ -456,6 +506,7 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
         }
         let flow = self.flows.get_mut(&id).ok_or(Error::Capacity)?;
         flow.device.rx = Some(bytes.to_vec());
+        flow.dirty = true;
         flow.stack_poll(now);
         let state = flow.sockets.get::<StackSocket>(flow.handle).state();
         if matches!(state, State::Listen | State::Closed) {
@@ -466,20 +517,38 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
     }
     /// One bounded pump pass: at most one upstream read/write per flow; no background thread.
     pub fn poll(&mut self, now: u64) -> Result<PollReport, Error> {
+        self.run_poll(now, None)
+    }
+    /// Readiness-driven pass: pumps only flows named in `ready` (upstream fd reported ready by
+    /// the caller's event loop) or flows with new client input, then reaps closed flows. Time
+    /// based work (connect deadline, stack timers, idle expiry) still runs for every flow
+    /// without any syscall. Unknown or duplicate ids are ignored. Call it again after
+    /// `next_wakeup` elapses even if no fd was ready.
+    pub fn poll_ready(&mut self, now: u64, ready: &[FlowId]) -> Result<PollReport, Error> {
+        let ready: HashSet<FlowId> = ready.iter().copied().collect();
+        self.run_poll(now, Some(&ready))
+    }
+    fn run_poll(&mut self, now: u64, ready: Option<&HashSet<FlowId>>) -> Result<PollReport, Error> {
         self.maintain(now)?;
         let mut report = PollReport::default();
         let mut closed = Vec::new();
         for (id, flow) in &mut self.flows {
+            let pump = ready.is_none_or(|ready| flow.dirty || ready.contains(id));
             if !flow.failed {
                 if flow.connecting && now - flow.created >= self.config.connect_timeout_ms {
                     flow.abort(now);
                     report.connect_timeouts += 1;
-                } else if flow.pump().is_err() {
-                    flow.abort(now);
-                    report.io_failures += 1;
+                } else if pump {
+                    flow.dirty = false;
+                    if flow.pump().is_err() {
+                        flow.abort(now);
+                        report.io_failures += 1;
+                    }
                 }
             }
-            flow.stack_poll(now);
+            if pump || flow.stack_due(now) {
+                flow.stack_poll(now);
+            }
             if flow.sockets.get::<StackSocket>(flow.handle).state() == State::Closed
                 && flow.device.tx.is_empty()
             {
@@ -491,6 +560,52 @@ impl<P: TcpSocketProtector> TcpRelay<P> {
             report.closed += 1;
         }
         Ok(report)
+    }
+    /// Upstream streams worth waiting on, with the readiness each needs. Flows with no interest
+    /// (waiting on the client, a full output queue or a failed upstream) are omitted.
+    #[cfg(unix)]
+    pub fn upstream_waits(&self) -> impl Iterator<Item = UpstreamWait> + '_ {
+        use std::os::fd::AsRawFd;
+        self.flows.iter().filter_map(|(id, flow)| {
+            let interest = flow.interest();
+            let upstream = flow.upstream.as_ref()?;
+            (interest.readable || interest.writable).then(|| UpstreamWait {
+                flow: *id,
+                fd: upstream.as_raw_fd(),
+                interest,
+            })
+        })
+    }
+    /// Earliest absolute time (ms) at which `poll_ready` has time-driven work: idle expiry,
+    /// connect deadline or a stack timer. `Some(now)` when new client input is unprocessed and
+    /// `None` when only fd readiness or new input can make progress. Flows whose output queue
+    /// is full are ignored: only `next_packet` draining can unblock them, not time.
+    pub fn next_wakeup(&mut self, now: u64) -> Option<u64> {
+        let mut next = self.engine.next_expiry();
+        let connect_timeout = self.config.connect_timeout_ms;
+        let at = Instant::from_millis(now as i64);
+        for flow in self.flows.values_mut() {
+            if flow.failed {
+                continue;
+            }
+            if flow.dirty {
+                return Some(now);
+            }
+            let mut due = None;
+            if flow.connecting {
+                due = Some(flow.created + connect_timeout);
+            }
+            if flow.device.available() {
+                if let Some(timer) = flow.iface.poll_at(at, &flow.sockets) {
+                    let timer = timer.total_millis().max(0) as u64;
+                    due = Some(due.map_or(timer, |d: u64| d.min(timer)));
+                }
+            }
+            if let Some(due) = due {
+                next = Some(next.map_or(due, |current| current.min(due)));
+            }
+        }
+        next.map(|time| time.max(now))
     }
     /// Drain round-robin output; every packet must pass current inbound policy and reverse-flow association.
     pub fn next_packet(&mut self, now: u64) -> Result<Option<Vec<u8>>, Error> {

@@ -19,7 +19,7 @@ impl Device {
             slots,
         }
     }
-    fn available(&self) -> bool {
+    pub fn available(&self) -> bool {
         self.tx.len() < self.slots
     }
 }
