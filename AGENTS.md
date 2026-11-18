@@ -2,7 +2,7 @@
 
 Read docs/CURRENT_STATUS.md, README.md and docs/PROJECT_CONTEXT.md, ARCHITECTURE.md, SECURITY_MODEL.md, DECISIONS.md and ROADMAP.md before changes.
 
-- Develop independently. Never access, change, expose or copy private `samilerol/netscope` code.
+- Develop independently. Never change, expose or copy private `samilerol/netscope` code. Owner exception (2026-11-18): netscope may be read **only** to build a feature/behavior inventory (what it does, UI features, user-visible behavior) so features can be re-implemented in Rust here. Record the inventory in own words in `docs/`; never paste or translate netscope code, identifiers, assets or secrets into this repository, and never write to netscope.
 - Rust-first portable security core. Target 95% Rust where practical; correctness overrides percentage. Minimal Kotlin/Java only for Android APIs. Prefer evaluated Rust-native UI; Flutter requires owner approval.
 - Stable Rust, MSRV 1.85. Workspace forbids unsafe. Justify any future unsafe boundary explicitly and test it.
 - Treat packets/configuration as hostile. Check bounds and lengths before offsets. Bound state and queues; document rejection behavior and allocation costs.
