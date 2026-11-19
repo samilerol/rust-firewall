@@ -27,6 +27,10 @@ If a secret or variable is missing the first step fails with a message saying wh
 - The workflow downloads the APK from CI artifacts and installs it with `adb install -r -d`; it grants only this app's own permissions and never changes other phone settings. `appops set ... ACTIVATE_VPN allow` may be refused by some Xiaomi/HyperOS builds; the result is recorded in `permissions.txt`.
 - The Tailscale step uses `tailscale/github-action` pinned by commit SHA (v4.4.0). It is a third-party dependency of this repository's CI; update it deliberately.
 
+## What this can and cannot test (learned from the first real-phone run)
+
+The first successful run (Xiaomi 2409BRN2CA, Android 16, arm64) installed the CI APK, launched it, and saw no crash and about 69 MB PSS in a 30 s window. It could **not** exercise NetScope's VPN: Android allows only **one VPN at a time**, and over this route the phone's VPN slot is Tailscale's (`tun1`, `100.x`). Tapping Connect in NetScope would replace Tailscale's VPN and drop the adb link. So this workflow covers install, launch, permissions, stability and resource snapshots; **VPN behavior on the phone must be tested over USB or LAN adb** (run `tools/android_device_probe.sh` locally, or use a self-hosted runner on the same network). The probe summary reports whether NetScope's own interface (`10.111.0.1`) was up so a run cannot be mistaken for a VPN test.
+
 ## Limits (not verified)
 
 - The setup was not run against a real phone when it was written: no phone or Tailscale account was available. The probe script was exercised against a fake `adb`, and the workflow YAML was only parsed. Expect to fix small things on the first real run (for example deriving `adbkey.pub` from `adbkey`, MagicDNS, MIUI permission prompts).

@@ -64,7 +64,9 @@ note permissions.txt adb shell pm grant "$PKG" android.permission.POST_NOTIFICAT
 note permissions.txt adb shell pm grant "$PKG" android.permission.READ_PHONE_STATE
 note permissions.txt adb shell appops set "$PKG" ACTIVATE_VPN allow
 
-echo "== launch and observe for ${WATCH}s (connect the VPN on the phone now)"
+echo "== launch and observe for ${WATCH}s"
+echo "   Note: Android allows one VPN at a time. If this phone is reached through Tailscale, starting"
+echo "   NetScope's VPN replaces Tailscale's and drops this adb link; use USB/LAN adb for VPN tests."
 adb logcat -c || true
 adb shell am start -n "$PKG/.MainActivity" | tee "$OUT/launch.txt"
 sleep "$WATCH"
@@ -89,7 +91,9 @@ echo "== summary"
     echo "device: $(grep -E 'ro.product.model' "$OUT/device.txt")"
     if [[ -n "$pid" ]]; then echo "app running: yes (pid $pid)"; else echo "app running: no"; fi
     echo "fatal crashes in log: $(grep -c 'FATAL EXCEPTION' "$OUT/logcat-all.txt" || true)"
-    echo "vpn lines in connectivity dump: $(grep -ci vpn "$OUT/connectivity-vpn.txt" || true)"
+    # NetScope's own VPN uses 10.111.0.1; other tun interfaces (e.g. Tailscale's) are not ours.
+    if grep -q '10\.111\.0\.1' "$OUT/interfaces.txt"; then echo "NetScope VPN interface (10.111.0.1) up: yes"; else echo "NetScope VPN interface (10.111.0.1) up: no"; fi
+    echo "tun interfaces present: $(grep -oE '^[0-9]+: tun[0-9]+' "$OUT/interfaces.txt" | sed 's/^[0-9]*: //' | sort -u | tr '\n' ' ')"
     echo "battery level before/after: $(grep -m1 ' level:' "$OUT/battery-before.txt" | tr -d ' ') / $(grep -m1 ' level:' "$OUT/battery-after.txt" | tr -d ' ')"
 } | tee "$OUT/summary.txt"
 echo "evidence written to $OUT"
