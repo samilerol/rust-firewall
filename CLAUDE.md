@@ -39,4 +39,4 @@ IPv6 loopback tests skip themselves (with a message) when the environment has no
 - Do not use `unsafe`. If it seems necessary, ask first.
 - Ask before adding a new crate or dependency.
 - After every change, `cargo fmt --check`, `cargo clippy ... -D warnings` and `cargo test --workspace` must pass. Report real results; never claim a check passed without running it.
-- Never copy code from the private `samilerol/netscope` repository into this one.
+- Never copy code from the private `samilerol/netscope` repository into this one. Read-only access is allowed solely for a feature inventory (see AGENTS.md owner exception); features are re-implemented independently in Rust. The original Flutter/Dart UI is not ported either; menus are re-implemented in Rust.

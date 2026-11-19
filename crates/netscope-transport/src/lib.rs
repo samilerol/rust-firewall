@@ -1,5 +1,5 @@
 //! Bounded nonblocking UDP relay. No TCP stack or Android socket protection implementation.
-use netscope_conntrack::FlowId;
+use netscope_conntrack::{FlowId, Observation};
 use netscope_dns::{parse_query, parse_response, DomainPolicy};
 use netscope_engine::{Config, DropReason, Engine, Outcome, Stats};
 use netscope_packet::{parse, udp, Protocol};
@@ -438,6 +438,14 @@ impl<P: SocketProtector> UdpRelay<P> {
     }
     pub fn flow_count(&self) -> usize {
         self.sockets.len()
+    }
+    /// Records the platform-resolved owner uid of an existing flow (informational only).
+    pub fn note_owner(&mut self, id: &FlowId, uid: Option<u32>) -> bool {
+        self.engine.note_owner(id, uid)
+    }
+    /// Bounded copy of the engine's tracked flows, newest first. Read-only.
+    pub fn flow_snapshot(&self, limit: usize) -> Vec<(FlowId, Observation)> {
+        self.engine.flow_snapshot(limit)
     }
     pub fn stats(&self) -> Stats {
         self.engine.stats()

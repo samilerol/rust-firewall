@@ -180,7 +180,11 @@ public final class DiagnosticVpnService extends VpnService {
                             if (n <= 0) break;
                             int result = NativeCore.forwardPacket(session, ingress, n, metadata);
                             if (result < 0) break;
-                            if (result > 0) observations.observe(metadata, n, result);
+                            if (result > 0) {
+                                int owner = observations.observe(metadata, n, result);
+                                // Only an admitted packet has a flow; this never changes a decision.
+                                if (result == 1 && owner >= 0) NativeCore.noteOwner(session, metadata, owner);
+                            }
                         } catch (ErrnoException error) {
                             if (error.errno != OsConstants.EAGAIN && error.errno != OsConstants.EINTR) throw error;
                         }
