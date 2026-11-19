@@ -77,6 +77,7 @@ jobs:
           ADB_SERIAL: ${{ vars.PHONE_TAILSCALE_HOST }}:${{ vars.PHONE_ADB_PORT || '5555' }}
           WATCH_SECONDS: ${{ inputs.watch_seconds }}
           OUT_DIR: /tmp/netscope-device
+        timeout-minutes: 8
         run: bash tools/android_device_probe.sh
       - name: Summary
         if: always()
