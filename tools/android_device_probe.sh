@@ -19,6 +19,9 @@ set -euo pipefail
 : "${APK:?set APK to the path of app-debug.apk}"
 [[ -f "$APK" ]] || { echo "APK not found: $APK" >&2; exit 2; }
 ADB_BIN="${ADB:-adb}"
+# Resolve to a path now: the wrapper function below is also called adb and must not recurse into itself.
+ADB_BIN="$(command -v "$ADB_BIN" || true)"
+[[ -n "$ADB_BIN" ]] || { echo "adb not found (install Android platform-tools or set ADB=/path/to/adb)" >&2; exit 2; }
 WATCH="${WATCH_SECONDS:-60}"
 OUT="${OUT_DIR:-/tmp/netscope-device}"
 PKG=org.netscope.ngfw
