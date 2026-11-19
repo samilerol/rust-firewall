@@ -32,6 +32,7 @@ pub fn load(reader: impl Read) -> Result<Policy, LoadError> {
         return Err(LoadError::TooLarge);
     }
     let text = std::str::from_utf8(&bytes).map_err(|_| LoadError::InvalidUtf8)?;
+    reject_control_chars(text)?;
     let mut lines = text.lines().enumerate().filter_map(|(index, line)| {
         let line = line.trim_ascii();
         (!line.is_empty() && !line.starts_with('#')).then_some((index + 1, line))
@@ -55,6 +56,26 @@ pub fn load(reader: impl Read) -> Result<Policy, LoadError> {
         rules.push(rule(text).ok_or(LoadError::InvalidLine { line })?);
     }
     Policy::new(rules, default).map_err(LoadError::Policy)
+}
+
+/// Reject control characters other than tab, LF and CR directly before LF,
+/// plus C1 controls, U+2028 and U+2029, so hidden text cannot survive in
+/// comments or blank lines.
+fn reject_control_chars(text: &str) -> Result<(), LoadError> {
+    let mut line = 1;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => line += 1,
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\t' => {}
+            '\0'..='\x1f' | '\x7f'..='\u{9f}' | '\u{2028}' | '\u{2029}' => {
+                return Err(LoadError::InvalidLine { line })
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn action(value: &str) -> Option<Action> {
@@ -129,6 +150,93 @@ mod tests {
         packet.protocol = Protocol::Udp;
         assert_eq!(policy.decide(&packet).rule_index, None);
         assert_eq!(policy.decide(&packet).action, Action::Deny);
+    }
+
+    fn invalid_line(text: &str) -> Option<usize> {
+        match load(text.as_bytes()) {
+            Err(LoadError::InvalidLine { line }) => Some(line),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn bare_cr_hidden_in_comment_is_rejected() {
+        let text = "netscope-policy 1\ndefault allow\n# block exfil\rrule 1 deny * * * * *\n";
+        assert_eq!(invalid_line(text), Some(3));
+    }
+
+    #[test]
+    fn bare_cr_rejected_on_every_line_kind_and_at_end() {
+        for text in [
+            "netscope-policy 1\r\r\ndefault allow\n",
+            "netscope-policy 1\ndefault\rallow\n",
+            "netscope-policy 1\ndefault allow\nrule 1 deny * * * * *\r\r\n",
+            "netscope-policy 1\ndefault allow\n\r\r\nrule 1 deny * * * * *\n",
+        ] {
+            assert!(invalid_line(text).is_some(), "{text:?}");
+        }
+        assert_eq!(
+            invalid_line("netscope-policy 1\rx\ndefault allow\n"),
+            Some(1)
+        );
+        assert_eq!(
+            invalid_line("netscope-policy 1\ndefault allow\r\r\n"),
+            Some(2)
+        );
+        assert_eq!(
+            invalid_line("netscope-policy 1\ndefault allow\n\r\r\n"),
+            Some(3)
+        );
+        assert_eq!(
+            invalid_line("netscope-policy 1\ndefault allow\n\r"),
+            Some(3)
+        );
+        assert_eq!(
+            invalid_line("netscope-policy 1\ndefault allow\n# x\r"),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn control_characters_in_comments_are_rejected() {
+        for control in ['\0', '\x1b', '\x7f'] {
+            let text = format!("netscope-policy 1\ndefault allow\n# a{control}b\n");
+            assert_eq!(invalid_line(&text), Some(3), "{control:?}");
+        }
+    }
+
+    #[test]
+    fn tabs_and_crlf_still_load() {
+        let text = "netscope-policy 1\r\n# note\r\ndefault deny\r\n\r\nrule\t1\tallow\ttcp\t*\t*\t*\t443\r\n";
+        let policy = load(text.as_bytes()).unwrap();
+        let packet = Packet {
+            source: "192.0.2.2".parse().unwrap(),
+            destination: "198.51.100.1".parse().unwrap(),
+            source_port: 1024,
+            destination_port: 443,
+            protocol: Protocol::Tcp,
+            length: 40,
+        };
+        assert_eq!(policy.decide(&packet).action, Action::Allow);
+    }
+
+    #[test]
+    fn control_character_line_number_counts_earlier_lines() {
+        let text =
+            "# one\nnetscope-policy 1\n\ndefault allow\n# four\nrule 1 deny * * * * *\n#\x1b\n";
+        assert_eq!(invalid_line(text), Some(7));
+    }
+
+    #[test]
+    fn line_separators_and_c1_controls_are_rejected_but_other_unicode_loads() {
+        for c in ['\u{85}', '\u{2028}', '\u{2029}', '\u{9b}'] {
+            let text = format!("netscope-policy 1\ndefault allow\n# a{c}b\n");
+            assert_eq!(invalid_line(&text), Some(3), "{c:?}");
+            let text = format!("netscope-policy 1\ndefault allow\n# ok\n# a{c}b\n");
+            assert_eq!(invalid_line(&text), Some(4), "{c:?}");
+        }
+        let text = "netscope-policy 1\ndefault allow\n# \u{15f}\u{11f}\u{131}\u{fc}\u{f6}\u{e7} \u{a0} \u{2027}\n";
+        assert!(load(text.as_bytes()).is_ok());
     }
 
     #[test]

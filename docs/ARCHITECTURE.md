@@ -36,4 +36,4 @@ rule 10 allow tcp 192.0.2.0/24 * * 443
 rule 20 deny udp * 2001:db8::/32 * 53-54
 ```
 
-Blank lines and full-line comments are accepted. Rules use ASCII whitespace between fields. Use `*` for any protocol, endpoint or port. Ports accept a decimal number or inclusive range. Rule order breaks priority ties. The version header and explicit default are required.
+Blank lines and full-line comments are accepted. ASCII control characters other than tab (including a bare CR not followed by LF), C1 controls U+0080 to U+009F, U+2028 and U+2029 are rejected anywhere in the input with the offending line number; CRLF line endings are accepted. Rules use ASCII whitespace between fields. Use `*` for any protocol, endpoint or port. Ports accept a decimal number or inclusive range. Rule order breaks priority ties. The version header and explicit default are required.
